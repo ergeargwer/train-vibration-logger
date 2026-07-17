@@ -66,6 +66,65 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Trip"
+  /trip/{trip_id}/note:
+    patch:
+      operationId: updateTripNote
+      tags: [trips]
+      summary: 更新行程備註
+      description: 更新指定行程的備註文字，傳入 null 可清除備註
+      parameters:
+        - name: trip_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: 行程識別碼
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateNoteBody"
+      responses:
+        "200":
+          description: 更新成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdateNoteResult"
+        "404":
+          description: 找不到該行程
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /cumulative-analysis:
+    post:
+      operationId: computeCumulativeAnalysis
+      tags: [trips]
+      summary: 跨行程累積搖晃分析
+      description: |
+        接收多個行程識別碼，合併所有紀錄後依 50 公尺網格進行統計分析。
+        網格樣本數達門檻時套用 IQR 離群值過濾，不足門檻時直接取平均值並標記。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CumulativeAnalysisRequest"
+      responses:
+        "200":
+          description: 分析結果
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CumulativeAnalysisResult"
+        "400":
+          description: 資料格式錯誤
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /trip/{trip_id}:
     get:
       operationId: getTripRecords
@@ -261,6 +320,71 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ShakeRecord"
+    UpdateNoteBody:
+      type: object
+      description: 行程備註更新請求
+      required:
+        - note
+      properties:
+        note:
+          type: ["string", "null"]
+          description: 備註文字；傳入 null 可清除備註
+    UpdateNoteResult:
+      type: object
+      description: 備註更新結果
+      required:
+        - success
+      properties:
+        success:
+          type: boolean
+    CumulativeAnalysisRequest:
+      type: object
+      description: 累積分析請求
+      required:
+        - trip_ids
+      properties:
+        trip_ids:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          description: 納入分析的行程識別碼清單（至少一筆）
+    GridCell:
+      type: object
+      description: 單一網格的統計結果
+      required:
+        - lat
+        - lng
+        - shake_index
+        - count
+        - insufficient_samples
+      properties:
+        lat:
+          type: number
+          description: 網格代表座標緯度（網格內所有紀錄的平均緯度）
+        lng:
+          type: number
+          description: 網格代表座標經度
+        shake_index:
+          type: number
+          description: 代表性搖晃指數（已排除離群值，或樣本不足時的直接平均值）
+        count:
+          type: integer
+          description: 網格內累積的紀錄筆數
+        insufficient_samples:
+          type: boolean
+          description: 是否為樣本數不足網格（true=樣本不足僅供參考，false=統計結果可信）
+    CumulativeAnalysisResult:
+      type: object
+      description: 累積分析結果
+      required:
+        - grids
+      properties:
+        grids:
+          type: array
+          items:
+            $ref: "#/components/schemas/GridCell"
+          description: 所有網格的統計結果清單
     ErrorResponse:
       type: object
       required:

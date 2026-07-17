@@ -110,6 +110,59 @@ export interface TripDetail {
   records: ShakeRecord[];
 }
 
+/**
+ * 行程備註更新請求
+ */
+export interface UpdateNoteBody {
+  /**
+     * 備註文字；傳入 null 可清除備註
+     * @nullable
+     */
+  note: string | null;
+}
+
+/**
+ * 備註更新結果
+ */
+export interface UpdateNoteResult {
+  success: boolean;
+}
+
+/**
+ * 累積分析請求
+ */
+export interface CumulativeAnalysisRequest {
+  /**
+     * 納入分析的行程識別碼清單（至少一筆）
+     * @minItems 1
+     */
+  trip_ids: string[];
+}
+
+/**
+ * 單一網格的統計結果
+ */
+export interface GridCell {
+  /** 網格代表座標緯度（網格內所有紀錄的平均緯度） */
+  lat: number;
+  /** 網格代表座標經度 */
+  lng: number;
+  /** 代表性搖晃指數（已排除離群值，或樣本不足時的直接平均值） */
+  shake_index: number;
+  /** 網格內累積的紀錄筆數 */
+  count: number;
+  /** 是否為樣本數不足網格（true=樣本不足僅供參考，false=統計結果可信） */
+  insufficient_samples: boolean;
+}
+
+/**
+ * 累積分析結果
+ */
+export interface CumulativeAnalysisResult {
+  /** 所有網格的統計結果清單 */
+  grids: GridCell[];
+}
+
 export interface ErrorResponse {
   error: string;
 }

@@ -5,6 +5,7 @@ import NotFound from '@/pages/not-found';
 import Home from '@/pages/home';
 import Record from '@/pages/record';
 import MapPage from '@/pages/map';
+import CumulativePage from '@/pages/cumulative';
 import { Route, Switch, Router as WouterRouter } from 'wouter';
 
 const queryClient = new QueryClient();
@@ -15,6 +16,7 @@ function Router() {
       <Route path="/" component={Home} />
       <Route path="/record" component={Record} />
       <Route path="/map" component={MapPage} />
+      <Route path="/cumulative" component={CumulativePage} />
       <Route component={NotFound} />
     </Switch>
   );

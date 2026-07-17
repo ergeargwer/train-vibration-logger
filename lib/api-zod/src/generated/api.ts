@@ -67,6 +67,46 @@ export const GetTripsResponse = zod.array(GetTripsResponseItem)
 
 
 /**
+ * 更新指定行程的備註文字，傳入 null 可清除備註
+ * @summary 更新行程備註
+ */
+export const UpdateTripNoteParams = zod.object({
+  "trip_id": zod.coerce.string().describe('行程識別碼')
+})
+
+export const UpdateTripNoteBody = zod.object({
+  "note": zod.string().nullable().describe('備註文字；傳入 null 可清除備註')
+}).describe('行程備註更新請求')
+
+export const UpdateTripNoteResponse = zod.object({
+  "success": zod.boolean()
+}).describe('備註更新結果')
+
+
+/**
+ * 接收多個行程識別碼，合併所有紀錄後依 50 公尺網格進行統計分析。
+ * 網格樣本數達門檻時套用 IQR 離群值過濾，不足門檻時直接取平均值並標記。
+ * @summary 跨行程累積搖晃分析
+ */
+
+
+
+export const ComputeCumulativeAnalysisBody = zod.object({
+  "trip_ids": zod.array(zod.string()).min(1).describe('納入分析的行程識別碼清單（至少一筆）')
+}).describe('累積分析請求')
+
+export const ComputeCumulativeAnalysisResponse = zod.object({
+  "grids": zod.array(zod.object({
+  "lat": zod.number().describe('網格代表座標緯度（網格內所有紀錄的平均緯度）'),
+  "lng": zod.number().describe('網格代表座標經度'),
+  "shake_index": zod.number().describe('代表性搖晃指數（已排除離群值，或樣本不足時的直接平均值）'),
+  "count": zod.number().describe('網格內累積的紀錄筆數'),
+  "insufficient_samples": zod.boolean().describe('是否為樣本數不足網格（true=樣本不足僅供參考，false=統計結果可信）')
+}).describe('單一網格的統計結果')).describe('所有網格的統計結果清單')
+}).describe('累積分析結果')
+
+
+/**
  * 回傳行程資訊與所有搖晃紀錄點，供地圖頁面繪製使用
  * @summary 取得指定行程的完整資料
  */

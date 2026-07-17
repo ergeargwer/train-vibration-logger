@@ -174,4 +174,39 @@ router.get("/trip/:trip_id", (req, res) => {
   res.json({ trip, records });
 });
 
+/**
+ * PATCH /api/trip/:trip_id/note
+ * 更新指定行程的備註文字
+ *
+ * 請求本體：{ note: string | null }
+ *   note 為字串時更新備註；為 null 時清除備註
+ */
+router.patch("/trip/:trip_id/note", (req, res) => {
+  const { trip_id } = req.params;
+  const { note } = req.body as { note?: string | null };
+
+  // 驗證 note 型別（接受字串或 null；不接受其他型別）
+  if (note !== null && note !== undefined && typeof note !== "string") {
+    res.status(400).json({ error: "note 必須為字串或 null" });
+    return;
+  }
+
+  // 確認行程存在
+  const exists = db
+    .prepare("SELECT 1 FROM trips WHERE trip_id = ?")
+    .get(trip_id);
+
+  if (!exists) {
+    res.status(404).json({ error: "找不到該行程" });
+    return;
+  }
+
+  db.prepare("UPDATE trips SET note = ? WHERE trip_id = ?").run(
+    note ?? null,
+    trip_id,
+  );
+
+  res.json({ success: true });
+});
+
 export default router;

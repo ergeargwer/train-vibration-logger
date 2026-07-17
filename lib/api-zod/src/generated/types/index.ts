@@ -6,11 +6,16 @@
  * OpenAPI spec version: 0.1.0
  */
 
+export * from './cumulativeAnalysisRequest';
+export * from './cumulativeAnalysisResult';
 export * from './errorResponse';
+export * from './gridCell';
 export * from './healthStatus';
 export * from './recordInput';
 export * from './shakeRecord';
 export * from './trip';
 export * from './tripDetail';
 export * from './tripUpload';
+export * from './updateNoteBody';
+export * from './updateNoteResult';
 export * from './uploadResult';

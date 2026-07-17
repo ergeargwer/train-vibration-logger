@@ -65,7 +65,7 @@ export default function Record() {
     startRecording,
     stopRecording,
   } = useShakeSensor();
-  const { lat, lng, accuracy, speedKmh, speedEstimated, status: geoStatus } = useGeolocation();
+  const { lat, lng, accuracy, speedKmh, speedEstimated, isSignalLost, status: geoStatus } = useGeolocation();
 
   const uploadTrip = useUploadTrip();
   const [deviceId, setDeviceId] = useState<string>('');
@@ -98,6 +98,13 @@ export default function Record() {
   useEffect(() => { speedEstimatedRef.current = speedEstimated; }, [speedEstimated]);
   useEffect(() => { latRef.current = lat; }, [lat]);
   useEffect(() => { lngRef.current = lng; }, [lng]);
+
+  /**
+   * 訊號中斷狀態 Ref
+   * isSignalLost state 由 useGeolocation 維護，這裡用 ref 讓 onTick 閉包讀到最新值
+   */
+  const isSignalLostRef = useRef<boolean>(false);
+  useEffect(() => { isSignalLostRef.current = isSignalLost; }, [isSignalLost]);
 
   // 初始化裝置識別碼
   useEffect(() => {
@@ -134,6 +141,7 @@ export default function Record() {
             pointHoverRadius: 4,
             tension: 0.3,
             fill: true,
+            spanGaps: false,  // null 值顯示為折線斷開（訊號中斷期間）
             yAxisID: 'y_shake',
           },
           {
@@ -146,6 +154,7 @@ export default function Record() {
             pointHoverRadius: 4,
             tension: 0.3,
             fill: false,
+            spanGaps: false,  // null 值顯示為折線斷開（訊號中斷期間）
             yAxisID: 'y_speed',
           },
         ],
@@ -246,8 +255,15 @@ export default function Record() {
    * 超過 MAX_CHART_POINTS 時移除最舊的點
    * 使用 chart.update('none') 直接渲染，不執行動畫，效能最佳
    */
+  /**
+   * 將新資料點推入雙Y軸波形圖
+   *
+   * shakeIndex / speed 可傳入 null：
+   *   null 代表訊號中斷期間的空白點，Chart.js 配合 spanGaps: false
+   *   會在該時間區間顯示折線斷開，不用直線連接中斷前後的數值。
+   */
   const pushToChart = useCallback(
-    (shakeIndex: number, level: number, speed: number, timeLabel: string) => {
+    (shakeIndex: number | null, level: number, speed: number | null, timeLabel: string) => {
       const chart = chartRef.current;
       if (!chart) return;
 
@@ -256,18 +272,20 @@ export default function Record() {
       const speedDataset = chart.data.datasets[1];
 
       labels.push(timeLabel);
-      (shakeDataset.data as number[]).push(shakeIndex);
-      (speedDataset.data as number[]).push(speed);
+      (shakeDataset.data as (number | null)[]).push(shakeIndex);
+      (speedDataset.data as (number | null)[]).push(speed);
 
       if (labels.length > MAX_CHART_POINTS) {
         labels.shift();
-        (shakeDataset.data as number[]).shift();
-        (speedDataset.data as number[]).shift();
+        (shakeDataset.data as (number | null)[]).shift();
+        (speedDataset.data as (number | null)[]).shift();
       }
 
-      // 依搖晃等級更新搖晃指數折線的顏色
-      shakeDataset.borderColor = SHAKE_LEVEL_COLORS[level] ?? SHAKE_LEVEL_COLORS[1];
-      shakeDataset.backgroundColor = `${SHAKE_LEVEL_COLORS[level] ?? SHAKE_LEVEL_COLORS[1]}14`;
+      // 僅在有實際數值時才更新搖晃等級顏色（null 表示中斷期間，不更新）
+      if (shakeIndex !== null) {
+        shakeDataset.borderColor = SHAKE_LEVEL_COLORS[level] ?? SHAKE_LEVEL_COLORS[1];
+        shakeDataset.backgroundColor = `${SHAKE_LEVEL_COLORS[level] ?? SHAKE_LEVEL_COLORS[1]}14`;
+      }
 
       chart.update('none');
     },
@@ -301,6 +319,12 @@ export default function Record() {
       const currentSpeedEstimated = speedEstimatedRef.current;
       const currentLat = latRef.current;
       const currentLng = lngRef.current;
+
+      // 訊號中斷（進入地下路段）：推入 null 讓波形圖顯示資料斷開，不寫入紀錄
+      if (isSignalLostRef.current) {
+        pushToChart(null, 1, null, timeLabel);
+        return;
+      }
 
       pushToChart(data.shake_index, data.shake_level, currentSpeed, timeLabel);
 
@@ -423,6 +447,21 @@ export default function Record() {
             >
               請求感測器權限
             </button>
+          </div>
+        )}
+
+        {/* 地下段訊號中斷警告（紀錄中才顯示） */}
+        {isRecording && isSignalLost && (
+          <div className="bg-destructive/10 border border-destructive/30 p-3 rounded-lg flex items-start gap-3">
+            <span className="w-2.5 h-2.5 rounded-full bg-destructive animate-pulse shrink-0 mt-1" />
+            <div className="flex flex-col">
+              <span className="text-sm font-semibold text-destructive">
+                訊號中斷，暫停紀錄中
+              </span>
+              <span className="text-xs text-destructive/80 mt-0.5">
+                可能進入地下路段。GPS 恢復後將自動繼續紀錄，中斷期間資料不計入。
+              </span>
+            </div>
           </div>
         )}
 

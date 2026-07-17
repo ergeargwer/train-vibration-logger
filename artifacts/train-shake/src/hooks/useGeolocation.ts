@@ -1,7 +1,7 @@
 /**
  * GPS 定位 Hook
  *
- * 回傳即時座標、定位精度、速度及定位狀態。
+ * 回傳即時座標、定位精度、速度、定位狀態，以及地下段訊號中斷狀態。
  *
  * 速度取值策略（依優先順序）：
  *   1. 優先使用 position.coords.speed（瀏覽器感測器直接回傳，單位 m/s）
@@ -10,10 +10,18 @@
  *      則使用 Haversine 公式計算與上一筆座標的距離，
  *      再除以時間差（秒）得到 m/s，轉換為 km/h，speed_estimated = true
  *   3. 本次行程的第一筆定位（無前一筆可計算）→ speed_kmh = 0，speed_estimated = true
+ *
+ * 訊號中斷偵測：
+ *   若連續 GPS_SIGNAL_TIMEOUT_MS 毫秒未取得有效定位，
+ *   isSignalLost 設為 true，由紀錄頁面暫停寫入與圖表繪製。
+ *   下次成功定位後自動恢復（isSignalLost = false）。
  */
 import { useState, useEffect, useRef } from 'react';
 
 export type GeoStatus = 'normal' | 'locating' | 'weak' | 'unavailable';
+
+/** 連續多久未取得 GPS 更新視為訊號中斷（毫秒）；進入地下路段的典型情境 */
+const GPS_SIGNAL_TIMEOUT_MS = 10_000;
 
 /** 儲存前一筆定位資料（用於 Haversine 備援計算） */
 type PrevPosition = {
@@ -54,9 +62,24 @@ export function useGeolocation() {
   const [speedKmh, setSpeedKmh] = useState<number>(0);
   const [speedEstimated, setSpeedEstimated] = useState<boolean>(true);
   const [status, setStatus] = useState<GeoStatus>('locating');
+  const [isSignalLost, setIsSignalLost] = useState<boolean>(false);
 
   // 前一筆定位資料（用於 Haversine 備援計算）
   const prevPositionRef = useRef<PrevPosition | null>(null);
+  // 最後一次成功取得定位的時間（毫秒時間戳記）
+  const lastSuccessTimeRef = useRef<number>(Date.now());
+
+  // 訊號中斷偵測：每秒檢查是否超過逾時門檻
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const elapsed = Date.now() - lastSuccessTimeRef.current;
+      if (elapsed > GPS_SIGNAL_TIMEOUT_MS) {
+        setIsSignalLost(true);
+      }
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     if (!navigator.geolocation) {
@@ -68,6 +91,10 @@ export function useGeolocation() {
       (position) => {
         const { latitude, longitude, accuracy: acc, speed } = position.coords;
         const nowMs = position.timestamp;
+
+        // 成功取得定位 → 重置訊號中斷狀態與計時器
+        lastSuccessTimeRef.current = Date.now();
+        setIsSignalLost(false);
 
         setLat(latitude);
         setLng(longitude);
@@ -104,6 +131,7 @@ export function useGeolocation() {
       (error) => {
         console.error('定位失敗：', error);
         setStatus('unavailable');
+        // 定位持續失敗時，訊號中斷偵測 timer 將在逾時後自動設定 isSignalLost
       },
       {
         enableHighAccuracy: true,
@@ -118,5 +146,5 @@ export function useGeolocation() {
     };
   }, []);
 
-  return { lat, lng, accuracy, speedKmh, speedEstimated, status };
+  return { lat, lng, accuracy, speedKmh, speedEstimated, isSignalLost, status };
 }

@@ -20,11 +20,15 @@ import type {
 } from '@tanstack/react-query';
 
 import type {
+  CumulativeAnalysisRequest,
+  CumulativeAnalysisResult,
   ErrorResponse,
   HealthStatus,
   Trip,
   TripDetail,
   TripUpload,
+  UpdateNoteBody,
+  UpdateNoteResult,
   UploadResult
 } from './api.schemas';
 
@@ -282,6 +286,152 @@ export function useGetTrips<TData = Awaited<ReturnType<typeof getTrips>>, TError
 
 
 
+
+export const getUpdateTripNoteUrl = (tripId: string,) => {
+
+
+
+
+  return `/api/trip/${tripId}/note`
+}
+
+/**
+ * 更新指定行程的備註文字，傳入 null 可清除備註
+ * @summary 更新行程備註
+ */
+export const updateTripNote = async (tripId: string,
+    updateNoteBody: UpdateNoteBody, options?: RequestInit): Promise<UpdateNoteResult> => {
+
+  return customFetch<UpdateNoteResult>(getUpdateTripNoteUrl(tripId),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(updateNoteBody)
+  }
+);}
+
+
+
+
+
+export const getUpdateTripNoteMutationOptions = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateTripNote>>, TError,{tripId: string;data: BodyType<UpdateNoteBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateTripNote>>, TError,{tripId: string;data: BodyType<UpdateNoteBody>}, TContext> => {
+
+const mutationKey = ['updateTripNote'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateTripNote>>, {tripId: string;data: BodyType<UpdateNoteBody>}> = (props) => {
+          const {tripId,data} = props ?? {};
+
+          return  updateTripNote(tripId,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateTripNoteMutationResult = NonNullable<Awaited<ReturnType<typeof updateTripNote>>>
+    export type UpdateTripNoteMutationBody = BodyType<UpdateNoteBody>
+    export type UpdateTripNoteMutationError = ErrorType<ErrorResponse>
+
+    /**
+ * @summary 更新行程備註
+ */
+export const useUpdateTripNote = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateTripNote>>, TError,{tripId: string;data: BodyType<UpdateNoteBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof updateTripNote>>,
+        TError,
+        {tripId: string;data: BodyType<UpdateNoteBody>},
+        TContext
+      > => {
+      return useMutation(getUpdateTripNoteMutationOptions(options));
+    }
+
+export const getComputeCumulativeAnalysisUrl = () => {
+
+
+
+
+  return `/api/cumulative-analysis`
+}
+
+/**
+ * 接收多個行程識別碼，合併所有紀錄後依 50 公尺網格進行統計分析。
+ * 網格樣本數達門檻時套用 IQR 離群值過濾，不足門檻時直接取平均值並標記。
+ * @summary 跨行程累積搖晃分析
+ */
+export const computeCumulativeAnalysis = async (cumulativeAnalysisRequest: CumulativeAnalysisRequest, options?: RequestInit): Promise<CumulativeAnalysisResult> => {
+
+  return customFetch<CumulativeAnalysisResult>(getComputeCumulativeAnalysisUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(cumulativeAnalysisRequest)
+  }
+);}
+
+
+
+
+
+export const getComputeCumulativeAnalysisMutationOptions = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof computeCumulativeAnalysis>>, TError,{data: BodyType<CumulativeAnalysisRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof computeCumulativeAnalysis>>, TError,{data: BodyType<CumulativeAnalysisRequest>}, TContext> => {
+
+const mutationKey = ['computeCumulativeAnalysis'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof computeCumulativeAnalysis>>, {data: BodyType<CumulativeAnalysisRequest>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  computeCumulativeAnalysis(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type ComputeCumulativeAnalysisMutationResult = NonNullable<Awaited<ReturnType<typeof computeCumulativeAnalysis>>>
+    export type ComputeCumulativeAnalysisMutationBody = BodyType<CumulativeAnalysisRequest>
+    export type ComputeCumulativeAnalysisMutationError = ErrorType<ErrorResponse>
+
+    /**
+ * @summary 跨行程累積搖晃分析
+ */
+export const useComputeCumulativeAnalysis = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof computeCumulativeAnalysis>>, TError,{data: BodyType<CumulativeAnalysisRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof computeCumulativeAnalysis>>,
+        TError,
+        {data: BodyType<CumulativeAnalysisRequest>},
+        TContext
+      > => {
+      return useMutation(getComputeCumulativeAnalysisMutationOptions(options));
+    }
 
 export const getGetTripRecordsUrl = (tripId: string,) => {
 

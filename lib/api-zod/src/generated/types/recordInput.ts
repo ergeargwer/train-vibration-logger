@@ -28,4 +28,11 @@ export interface RecordInput {
   shake_level: number;
   /** 綜合搖晃指數（X 軸與 Z 軸加權合成值） */
   shake_index: number;
+  /**
+     * 行駛速度（km/h）；由感測器直接取得或以 Haversine 公式從座標推算
+     * @minimum 0
+     */
+  speed_kmh: number;
+  /** 速度是否為推算值（true=座標 Haversine 推算，false=感測器實測） */
+  speed_estimated: boolean;
 }

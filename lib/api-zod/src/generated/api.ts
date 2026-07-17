@@ -23,6 +23,8 @@ export const HealthCheckResponse = zod.object({
  */
 export const uploadTripBodyRecordsItemShakeLevelMax = 5;
 
+export const uploadTripBodyRecordsItemSpeedKmhMin = 0;
+
 
 
 export const UploadTripBody = zod.object({
@@ -36,7 +38,9 @@ export const UploadTripBody = zod.object({
   "x_accel": zod.number().describe('X 軸加速度（左右搖晃）RMS 值'),
   "z_accel": zod.number().describe('Z 軸加速度（上下震動）RMS 值'),
   "shake_level": zod.number().min(1).max(uploadTripBodyRecordsItemShakeLevelMax).describe('搖晃等級（1 至 5 級）'),
-  "shake_index": zod.number().describe('綜合搖晃指數（X 軸與 Z 軸加權合成值）')
+  "shake_index": zod.number().describe('綜合搖晃指數（X 軸與 Z 軸加權合成值）'),
+  "speed_kmh": zod.number().min(uploadTripBodyRecordsItemSpeedKmhMin).describe('行駛速度（km\/h）；由感測器直接取得或以 Haversine 公式從座標推算'),
+  "speed_estimated": zod.boolean().describe('速度是否為推算值（true=座標 Haversine 推算，false=感測器實測）')
 }).describe('單筆搖晃紀錄資料')).describe('行程資料陣列')
 }).describe('行程上傳資料')
 
@@ -88,7 +92,9 @@ export const GetTripRecordsResponse = zod.object({
   "x_accel": zod.number(),
   "z_accel": zod.number(),
   "shake_level": zod.number(),
-  "shake_index": zod.number()
+  "shake_index": zod.number(),
+  "speed_kmh": zod.number().describe('行駛速度（km\/h）'),
+  "speed_estimated": zod.boolean().describe('速度是否為推算值')
 }).describe('單筆搖晃紀錄（從資料庫取出）'))
 }).describe('行程詳細資料（含所有紀錄點）')
 

@@ -19,4 +19,8 @@ export interface ShakeRecord {
   z_accel: number;
   shake_level: number;
   shake_index: number;
+  /** 行駛速度（km/h） */
+  speed_kmh: number;
+  /** 速度是否為推算值 */
+  speed_estimated: boolean;
 }

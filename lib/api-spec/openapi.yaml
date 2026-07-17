@@ -112,6 +112,8 @@ components:
         - z_accel
         - shake_level
         - shake_index
+        - speed_kmh
+        - speed_estimated
       properties:
         lat:
           type: number
@@ -136,6 +138,13 @@ components:
         shake_index:
           type: number
           description: 綜合搖晃指數（X 軸與 Z 軸加權合成值）
+        speed_kmh:
+          type: number
+          minimum: 0
+          description: 行駛速度（km/h）；由感測器直接取得或以 Haversine 公式從座標推算
+        speed_estimated:
+          type: boolean
+          description: 速度是否為推算值（true=座標 Haversine 推算，false=感測器實測）
     TripUpload:
       type: object
       description: 行程上傳資料
@@ -212,6 +221,8 @@ components:
         - z_accel
         - shake_level
         - shake_index
+        - speed_kmh
+        - speed_estimated
       properties:
         id:
           type: integer
@@ -231,6 +242,12 @@ components:
           type: integer
         shake_index:
           type: number
+        speed_kmh:
+          type: number
+          description: 行駛速度（km/h）
+        speed_estimated:
+          type: boolean
+          description: 速度是否為推算值
     TripDetail:
       type: object
       description: 行程詳細資料（含所有紀錄點）

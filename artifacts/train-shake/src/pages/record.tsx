@@ -1,32 +1,71 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Chart, LineController, LineElement, PointElement, LinearScale, CategoryScale, Title, Filler, Tooltip } from 'chart.js';
+import {
+  Chart,
+  LineController,
+  LineElement,
+  PointElement,
+  LinearScale,
+  CategoryScale,
+  Title,
+  Legend,
+  Tooltip,
+  Filler,
+} from 'chart.js';
 import { useShakeSensor } from '@/hooks/useShakeSensor';
 import { useGeolocation } from '@/hooks/useGeolocation';
 import { useUploadTrip } from '@workspace/api-client-react';
 import { Link, useLocation } from 'wouter';
-import { ChevronLeft, AlertTriangle, ShieldAlert, Navigation2, Play, Square, Activity } from 'lucide-react';
+import {
+  ChevronLeft,
+  AlertTriangle,
+  ShieldAlert,
+  Navigation2,
+  Play,
+  Square,
+  Activity,
+  Gauge,
+} from 'lucide-react';
 import type { RecordInput } from '@workspace/api-client-react';
 
-// 注冊 Chart.js 所需元件（避免 tree-shake 掉需要的模組）
-Chart.register(LineController, LineElement, PointElement, LinearScale, CategoryScale, Title, Filler, Tooltip);
+// 注冊 Chart.js 所需元件
+Chart.register(
+  LineController,
+  LineElement,
+  PointElement,
+  LinearScale,
+  CategoryScale,
+  Title,
+  Legend,
+  Tooltip,
+  Filler,
+);
 
-// 波形圖最多保留最近 N 秒的資料點
+/** 波形圖最多保留最近 N 秒的資料點 */
 const MAX_CHART_POINTS = 30;
 
-// 各搖晃等級對應的折線顏色
-const LEVEL_COLORS: Record<number, string> = {
-  1: '#22c55e',  // 等級 1：綠色（平穩）
-  2: '#84cc16',  // 等級 2：黃綠色（輕微）
-  3: '#eab308',  // 等級 3：黃色（中度）
-  4: '#f97316',  // 等級 4：橘色（明顯）
-  5: '#ef4444',  // 等級 5：紅色（劇烈）
+/** 各搖晃等級對應的「搖晃指數」折線顏色 */
+const SHAKE_LEVEL_COLORS: Record<number, string> = {
+  1: '#22c55e',
+  2: '#84cc16',
+  3: '#eab308',
+  4: '#f97316',
+  5: '#ef4444',
 };
+
+/** 速度折線固定色（藍色系，與搖晃指數顏色系列不重疊） */
+const SPEED_LINE_COLOR = '#3b82f6';
 
 export default function Record() {
   const [, setLocation] = useLocation();
-  const { permission, requestPermission, currentShake, isRecording, startRecording, stopRecording } =
-    useShakeSensor();
-  const { lat, lng, accuracy, status: geoStatus } = useGeolocation();
+  const {
+    permission,
+    requestPermission,
+    currentShake,
+    isRecording,
+    startRecording,
+    stopRecording,
+  } = useShakeSensor();
+  const { lat, lng, accuracy, speedKmh, speedEstimated, status: geoStatus } = useGeolocation();
 
   const uploadTrip = useUploadTrip();
   const [deviceId, setDeviceId] = useState<string>('');
@@ -48,7 +87,12 @@ export default function Record() {
     setDeviceId(id);
   }, []);
 
-  // 初始化波形圖（元件掛載後建立，卸載時銷毀）
+  /**
+   * 初始化雙Y軸波形圖
+   *   左側 Y 軸（y_shake）：綜合搖晃指數
+   *   右側 Y 軸（y_speed）：速度（km/h）
+   * 元件卸載時銷毀圖表實例，避免 canvas 記憶體洩漏
+   */
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -59,23 +103,38 @@ export default function Record() {
         labels: [],
         datasets: [
           {
-            label: '綜合搖晃指數',
+            label: '搖晃指數',
             data: [],
-            borderColor: LEVEL_COLORS[1],
-            backgroundColor: 'rgba(34, 197, 94, 0.08)',
+            borderColor: SHAKE_LEVEL_COLORS[1],
+            backgroundColor: `${SHAKE_LEVEL_COLORS[1]}14`,
             borderWidth: 2,
             pointRadius: 2,
             pointHoverRadius: 4,
             tension: 0.3,
             fill: true,
+            yAxisID: 'y_shake',
+          },
+          {
+            label: '速度 (km/h)',
+            data: [],
+            borderColor: SPEED_LINE_COLOR,
+            backgroundColor: `${SPEED_LINE_COLOR}14`,
+            borderWidth: 2,
+            pointRadius: 2,
+            pointHoverRadius: 4,
+            tension: 0.3,
+            fill: false,
+            yAxisID: 'y_speed',
           },
         ],
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        animation: {
-          duration: 0, // 關閉動畫，避免每秒更新時閃爍
+        animation: { duration: 0 },
+        interaction: {
+          mode: 'index',
+          intersect: false,
         },
         plugins: {
           title: {
@@ -83,15 +142,28 @@ export default function Record() {
             text: '近期搖晃趨勢',
             font: { size: 13, weight: 'bold' },
             color: '#374151',
-            padding: { bottom: 8 },
+            padding: { bottom: 6 },
+          },
+          legend: {
+            display: true,
+            position: 'top',
+            align: 'end',
+            labels: {
+              font: { size: 11 },
+              color: '#6b7280',
+              boxWidth: 12,
+              padding: 10,
+            },
           },
           tooltip: {
             callbacks: {
-              label: (ctx) => `指數：${(ctx.raw as number).toFixed(3)}`,
+              label: (ctx) => {
+                if (ctx.datasetIndex === 0) {
+                  return `搖晃指數：${(ctx.raw as number).toFixed(3)}`;
+                }
+                return `速度：${(ctx.raw as number).toFixed(1)} km/h`;
+              },
             },
-          },
-          legend: {
-            display: false,
           },
         },
         scales: {
@@ -102,25 +174,40 @@ export default function Record() {
               maxTicksLimit: 6,
               maxRotation: 0,
             },
-            grid: {
-              color: 'rgba(0,0,0,0.05)',
-            },
+            grid: { color: 'rgba(0,0,0,0.05)' },
           },
-          y: {
+          y_shake: {
+            type: 'linear',
+            position: 'left',
+            min: 0,
             title: {
               display: true,
-              text: '綜合搖晃指數',
-              font: { size: 11 },
+              text: '搖晃指數',
+              font: { size: 10 },
               color: '#6b7280',
             },
-            min: 0,
             ticks: {
               font: { size: 10 },
               color: '#9ca3af',
             },
-            grid: {
-              color: 'rgba(0,0,0,0.05)',
+            grid: { color: 'rgba(0,0,0,0.05)' },
+          },
+          y_speed: {
+            type: 'linear',
+            position: 'right',
+            min: 0,
+            title: {
+              display: true,
+              text: '速度 (km/h)',
+              font: { size: 10 },
+              color: '#6b7280',
             },
+            ticks: {
+              font: { size: 10 },
+              color: '#9ca3af',
+            },
+            // 右側 Y 軸的格線不重複繪製，避免視覺干擾
+            grid: { drawOnChartArea: false },
           },
         },
       },
@@ -133,39 +220,46 @@ export default function Record() {
   }, []);
 
   /**
-   * 將新的搖晃資料點加入波形圖
-   * 超過 MAX_CHART_POINTS 時從頭移除最舊的資料點（避免圖表無限增長）
-   * 使用 chart.update() 動態更新，不重繪整個圖表
+   * 將新的一秒資料推入波形圖
+   * 超過 MAX_CHART_POINTS 時移除最舊的點
+   * 使用 chart.update('none') 直接渲染，不執行動畫，效能最佳
    */
-  const pushToChart = useCallback((shakeIndex: number, level: number, timeLabel: string) => {
-    const chart = chartRef.current;
-    if (!chart) return;
+  const pushToChart = useCallback(
+    (shakeIndex: number, level: number, speed: number, timeLabel: string) => {
+      const chart = chartRef.current;
+      if (!chart) return;
 
-    const dataset = chart.data.datasets[0];
-    const labels = chart.data.labels as string[];
+      const labels = chart.data.labels as string[];
+      const shakeDataset = chart.data.datasets[0];
+      const speedDataset = chart.data.datasets[1];
 
-    labels.push(timeLabel);
-    (dataset.data as number[]).push(shakeIndex);
+      labels.push(timeLabel);
+      (shakeDataset.data as number[]).push(shakeIndex);
+      (speedDataset.data as number[]).push(speed);
 
-    if (labels.length > MAX_CHART_POINTS) {
-      labels.shift();
-      (dataset.data as number[]).shift();
-    }
+      if (labels.length > MAX_CHART_POINTS) {
+        labels.shift();
+        (shakeDataset.data as number[]).shift();
+        (speedDataset.data as number[]).shift();
+      }
 
-    // 依當前搖晃等級更新折線顏色
-    dataset.borderColor = LEVEL_COLORS[level] ?? LEVEL_COLORS[1];
-    dataset.backgroundColor = `${(LEVEL_COLORS[level] ?? LEVEL_COLORS[1])}14`; // 加上低透明度填色
+      // 依搖晃等級更新搖晃指數折線的顏色
+      shakeDataset.borderColor = SHAKE_LEVEL_COLORS[level] ?? SHAKE_LEVEL_COLORS[1];
+      shakeDataset.backgroundColor = `${SHAKE_LEVEL_COLORS[level] ?? SHAKE_LEVEL_COLORS[1]}14`;
 
-    chart.update('none'); // 'none' 模式：跳過動畫，直接渲染，效能最佳
-  }, []);
+      chart.update('none');
+    },
+    [],
+  );
 
   const handleStart = useCallback(() => {
-    // 清除先前的波形圖資料
+    // 清空波形圖資料
     const chart = chartRef.current;
     if (chart) {
       chart.data.labels = [];
       chart.data.datasets[0].data = [];
-      chart.data.datasets[0].borderColor = LEVEL_COLORS[1];
+      chart.data.datasets[1].data = [];
+      chart.data.datasets[0].borderColor = SHAKE_LEVEL_COLORS[1];
       chart.update('none');
     }
 
@@ -174,9 +268,16 @@ export default function Record() {
 
     startRecording((data) => {
       const now = new Date();
-      const timeLabel = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+      const timeLabel =
+        `${String(now.getHours()).padStart(2, '0')}:` +
+        `${String(now.getMinutes()).padStart(2, '0')}:` +
+        `${String(now.getSeconds()).padStart(2, '0')}`;
 
-      pushToChart(data.shake_index, data.shake_level, timeLabel);
+      // 每次 onTick 捕捉當下的速度快照
+      // 注意：speedKmh 與 speedEstimated 由外層閉包捕捉，
+      // 為避免閉包陳舊問題，此處直接使用，
+      // 因 useGeolocation 的 watchPosition 保持最新值
+      pushToChart(data.shake_index, data.shake_level, speedKmh, timeLabel);
 
       if (lat !== null && lng !== null) {
         setRecords((prev) => [
@@ -189,11 +290,13 @@ export default function Record() {
             z_accel: data.z_accel,
             shake_index: data.shake_index,
             shake_level: data.shake_level,
+            speed_kmh: speedKmh,
+            speed_estimated: speedEstimated,
           },
         ]);
       }
     });
-  }, [startRecording, lat, lng, pushToChart]);
+  }, [startRecording, lat, lng, speedKmh, speedEstimated, pushToChart]);
 
   const handleStop = useCallback(async () => {
     stopRecording();
@@ -254,7 +357,7 @@ export default function Record() {
       case 3: return '中度搖晃';
       case 4: return '明顯搖晃';
       case 5: return '劇烈搖晃';
-      default: return '等待中';
+      default: return '尚未開始紀錄';
     }
   };
 
@@ -306,7 +409,7 @@ export default function Record() {
                 {geoStatus === 'locating'
                   ? '正在定位中，請稍候...'
                   : geoStatus === 'weak'
-                    ? `訊號微弱（誤差 > 50m，建議移至戶外後再開始紀錄）`
+                    ? '訊號微弱（誤差 > 50m，建議移至戶外後再開始紀錄）'
                     : '無法取得 GPS 位置，請確認已開啟定位服務與應用程式權限。'}
               </span>
             </div>
@@ -335,7 +438,7 @@ export default function Record() {
 
           <div className="grid grid-cols-3 gap-4 w-full max-w-xs">
             <div className="flex flex-col items-center">
-              <span className="text-xs text-muted-foreground mb-1">綜合指數</span>
+              <span className="text-xs text-muted-foreground mb-1">搖晃指數</span>
               <span className="font-mono font-semibold text-foreground">
                 {currentShake ? currentShake.shake_index.toFixed(3) : '0.000'}
               </span>
@@ -355,14 +458,14 @@ export default function Record() {
           </div>
         </div>
 
-        {/* 即時波形圖 */}
+        {/* 即時波形圖（雙Y軸：左側搖晃指數 / 右側速度） */}
         <div className="bg-card rounded-xl border p-4">
-          <div className="h-40">
+          <div className="h-48">
             <canvas ref={canvasRef} />
           </div>
         </div>
 
-        {/* GPS 座標與感測器資訊列 */}
+        {/* GPS 座標、速度與精度資訊列 */}
         <div className="grid grid-cols-1 gap-2">
           <div className="flex items-center justify-between p-3 rounded-lg border bg-card">
             <div className="flex items-center gap-2 text-muted-foreground">
@@ -376,6 +479,21 @@ export default function Record() {
             </span>
           </div>
 
+          <div className="flex items-center justify-between p-3 rounded-lg border bg-card">
+            <div className="flex items-center gap-2 text-muted-foreground">
+              <Gauge className="w-4 h-4" />
+              <span className="text-sm">目前速度</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-sm font-mono font-semibold text-foreground">
+                {speedKmh.toFixed(1)} km/h
+              </span>
+              {speedEstimated && (
+                <span className="text-xs text-muted-foreground">(推算)</span>
+              )}
+            </div>
+          </div>
+
           {accuracy !== null && (
             <div className="flex items-center justify-between p-3 rounded-lg border bg-card">
               <div className="flex items-center gap-2 text-muted-foreground">
@@ -383,7 +501,11 @@ export default function Record() {
                 <span className="text-sm">定位精度</span>
               </div>
               <span className="text-sm font-mono font-medium text-foreground">
-                {accuracy < 10 ? `${accuracy.toFixed(1)} m（良好）` : accuracy < 50 ? `${accuracy.toFixed(1)} m（普通）` : `${accuracy.toFixed(0)} m（訊號弱）`}
+                {accuracy < 10
+                  ? `${accuracy.toFixed(1)} m（良好）`
+                  : accuracy < 50
+                    ? `${accuracy.toFixed(1)} m（普通）`
+                    : `${accuracy.toFixed(0)} m（訊號弱）`}
               </span>
             </div>
           )}

@@ -3,27 +3,95 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: 火車搖晃程度紀錄系統 API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
-    description: Health operations
+    description: 健康檢查
+  - name: trips
+    description: 行程與紀錄資料
 paths:
   /healthz:
     get:
       operationId: healthCheck
       tags: [health]
-      summary: Health check
-      description: Returns server health status
+      summary: 健康檢查
+      description: 伺服器健康狀態
       responses:
         "200":
-          description: Healthy
+          description: 正常
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /upload:
+    post:
+      operationId: uploadTrip
+      tags: [trips]
+      summary: 上傳行程資料
+      description: 接收一次行程的完整資料陣列，寫入資料庫
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TripUpload"
+      responses:
+        "201":
+          description: 上傳成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadResult"
+        "400":
+          description: 資料格式錯誤
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /trips:
+    get:
+      operationId: getTrips
+      tags: [trips]
+      summary: 取得所有行程列表
+      description: 回傳所有已紀錄的行程摘要列表
+      responses:
+        "200":
+          description: 行程列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Trip"
+  /trip/{trip_id}:
+    get:
+      operationId: getTripRecords
+      tags: [trips]
+      summary: 取得指定行程的完整資料
+      description: 回傳行程資訊與所有搖晃紀錄點，供地圖頁面繪製使用
+      parameters:
+        - name: trip_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: 行程識別碼
+      responses:
+        "200":
+          description: 行程詳細資料
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TripDetail"
+        "404":
+          description: 找不到該行程
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 components:
   schemas:
     HealthStatus:
@@ -33,4 +101,153 @@ components:
           type: string
       required:
         - status
-
+    RecordInput:
+      type: object
+      description: 單筆搖晃紀錄資料
+      required:
+        - lat
+        - lng
+        - timestamp
+        - x_accel
+        - z_accel
+        - shake_level
+        - shake_index
+      properties:
+        lat:
+          type: number
+          description: 緯度
+        lng:
+          type: number
+          description: 經度
+        timestamp:
+          type: string
+          description: 時間戳記（ISO 8601 格式）
+        x_accel:
+          type: number
+          description: X 軸加速度（左右搖晃）RMS 值
+        z_accel:
+          type: number
+          description: Z 軸加速度（上下震動）RMS 值
+        shake_level:
+          type: integer
+          minimum: 1
+          maximum: 5
+          description: 搖晃等級（1 至 5 級）
+        shake_index:
+          type: number
+          description: 綜合搖晃指數（X 軸與 Z 軸加權合成值）
+    TripUpload:
+      type: object
+      description: 行程上傳資料
+      required:
+        - device_id
+        - trip_id
+        - records
+      properties:
+        device_id:
+          type: string
+          description: 裝置識別碼（UUID）
+        trip_id:
+          type: string
+          description: 本次行程識別碼（UUID）
+        note:
+          type: string
+          description: 備註（可選）
+        records:
+          type: array
+          items:
+            $ref: "#/components/schemas/RecordInput"
+          description: 行程資料陣列
+    UploadResult:
+      type: object
+      description: 上傳結果
+      required:
+        - success
+        - trip_id
+        - count
+      properties:
+        success:
+          type: boolean
+        trip_id:
+          type: string
+        count:
+          type: integer
+          description: 成功寫入的紀錄筆數
+    Trip:
+      type: object
+      description: 行程摘要資訊
+      required:
+        - trip_id
+        - device_id
+        - start_time
+        - end_time
+        - record_count
+      properties:
+        trip_id:
+          type: string
+        device_id:
+          type: string
+        start_time:
+          type: string
+          description: 行程開始時間
+        end_time:
+          type: string
+          description: 行程結束時間
+        note:
+          type: ["string", "null"]
+          description: 備註
+        record_count:
+          type: integer
+          description: 紀錄筆數
+    ShakeRecord:
+      type: object
+      description: 單筆搖晃紀錄（從資料庫取出）
+      required:
+        - id
+        - trip_id
+        - lat
+        - lng
+        - timestamp
+        - x_accel
+        - z_accel
+        - shake_level
+        - shake_index
+      properties:
+        id:
+          type: integer
+        trip_id:
+          type: string
+        lat:
+          type: number
+        lng:
+          type: number
+        timestamp:
+          type: string
+        x_accel:
+          type: number
+        z_accel:
+          type: number
+        shake_level:
+          type: integer
+        shake_index:
+          type: number
+    TripDetail:
+      type: object
+      description: 行程詳細資料（含所有紀錄點）
+      required:
+        - trip
+        - records
+      properties:
+        trip:
+          $ref: "#/components/schemas/Trip"
+        records:
+          type: array
+          items:
+            $ref: "#/components/schemas/ShakeRecord"
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string

@@ -3,6 +3,10 @@ import cors from "cors";
 import pinoHttp from "pino-http";
 import router from "./routes";
 import { logger } from "./lib/logger";
+import { initDb } from "./lib/db";
+
+// 初始化 SQLite 資料庫結構
+initDb();
 
 const app: Express = express();
 

@@ -77,6 +77,28 @@ export default function Record() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const chartRef = useRef<Chart | null>(null);
 
+  /**
+   * 速度與座標的 Ref 橋接
+   *
+   * 問題背景：startRecording 接收的 onTick 回呼在呼叫當下捕捉閉包，
+   * 之後 setInterval 每秒呼叫的都是同一個 onTick，React state 的更新
+   * 無法穿透已建立的閉包，導致 speedKmh / lat / lng 永遠是按下「開始」
+   * 當下的初始值（stale closure）。
+   *
+   * 修正方式：將這四個會隨時間變化的值同步寫入 ref，
+   * onTick 改讀 ref.current，每次執行都能取得最新值，
+   * 不受閉包捕捉時機限制。
+   */
+  const speedKmhRef = useRef<number>(speedKmh);
+  const speedEstimatedRef = useRef<boolean>(speedEstimated);
+  const latRef = useRef<number | null>(lat);
+  const lngRef = useRef<number | null>(lng);
+
+  useEffect(() => { speedKmhRef.current = speedKmh; }, [speedKmh]);
+  useEffect(() => { speedEstimatedRef.current = speedEstimated; }, [speedEstimated]);
+  useEffect(() => { latRef.current = lat; }, [lat]);
+  useEffect(() => { lngRef.current = lng; }, [lng]);
+
   // 初始化裝置識別碼
   useEffect(() => {
     let id = localStorage.getItem('device_id');
@@ -273,30 +295,35 @@ export default function Record() {
         `${String(now.getMinutes()).padStart(2, '0')}:` +
         `${String(now.getSeconds()).padStart(2, '0')}`;
 
-      // 每次 onTick 捕捉當下的速度快照
-      // 注意：speedKmh 與 speedEstimated 由外層閉包捕捉，
-      // 為避免閉包陳舊問題，此處直接使用，
-      // 因 useGeolocation 的 watchPosition 保持最新值
-      pushToChart(data.shake_index, data.shake_level, speedKmh, timeLabel);
+      // ref.current 在每次 interval 觸發時都反映最新值，
+      // 不受閉包建立時的快照限制
+      const currentSpeed = speedKmhRef.current;
+      const currentSpeedEstimated = speedEstimatedRef.current;
+      const currentLat = latRef.current;
+      const currentLng = lngRef.current;
 
-      if (lat !== null && lng !== null) {
+      pushToChart(data.shake_index, data.shake_level, currentSpeed, timeLabel);
+
+      if (currentLat !== null && currentLng !== null) {
         setRecords((prev) => [
           ...prev,
           {
-            lat,
-            lng,
+            lat: currentLat,
+            lng: currentLng,
             timestamp: now.toISOString(),
             x_accel: data.x_accel,
             z_accel: data.z_accel,
             shake_index: data.shake_index,
             shake_level: data.shake_level,
-            speed_kmh: speedKmh,
-            speed_estimated: speedEstimated,
+            speed_kmh: currentSpeed,
+            speed_estimated: currentSpeedEstimated,
           },
         ]);
       }
     });
-  }, [startRecording, lat, lng, speedKmh, speedEstimated, pushToChart]);
+    // speedKmh / speedEstimated / lat / lng 已改由 ref 讀取，
+    // 不再需要列入依賴陣列，避免每次 GPS 更新都重建回呼
+  }, [startRecording, pushToChart]);
 
   const handleStop = useCallback(async () => {
     stopRecording();

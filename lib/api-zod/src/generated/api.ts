@@ -67,6 +67,73 @@ export const GetTripsResponse = zod.array(GetTripsResponseItem)
 
 
 /**
+ * 開始紀錄時呼叫，在資料庫建立行程紀錄並回傳 trip_id。
+ * 後續所有分批上傳請求皆需帶入此識別碼。
+ * @summary 建立新行程
+ */
+export const StartTripBody = zod.object({
+  "device_id": zod.string().describe('裝置識別碼（UUID）'),
+  "note": zod.string().optional().describe('行程備註（可選）')
+}).describe('建立新行程的請求資料')
+
+export const StartTripResponse = zod.object({
+  "trip_id": zod.string().describe('新建立的行程識別碼'),
+  "start_time": zod.string().describe('行程開始時間（ISO 8601）')
+}).describe('建立行程結果')
+
+
+/**
+ * 將一批搖晃紀錄追加至指定行程，可重複呼叫多次。
+ * 上傳失敗時前端保留本批次資料，待下次排程時合併重試。
+ * @summary 分批上傳搖晃紀錄
+ */
+export const AppendTripRecordsParams = zod.object({
+  "trip_id": zod.coerce.string().describe('行程識別碼')
+})
+
+export const appendTripRecordsBodyRecordsItemShakeLevelMax = 5;
+
+export const appendTripRecordsBodyRecordsItemSpeedKmhMin = 0;
+
+
+
+
+export const AppendTripRecordsBody = zod.object({
+  "records": zod.array(zod.object({
+  "lat": zod.number().describe('緯度'),
+  "lng": zod.number().describe('經度'),
+  "timestamp": zod.string().describe('時間戳記（ISO 8601 格式）'),
+  "x_accel": zod.number().describe('X 軸加速度（左右搖晃）RMS 值'),
+  "z_accel": zod.number().describe('Z 軸加速度（上下震動）RMS 值'),
+  "shake_level": zod.number().min(1).max(appendTripRecordsBodyRecordsItemShakeLevelMax).describe('搖晃等級（1 至 5 級）'),
+  "shake_index": zod.number().describe('綜合搖晃指數（X 軸與 Z 軸加權合成值）'),
+  "speed_kmh": zod.number().min(appendTripRecordsBodyRecordsItemSpeedKmhMin).describe('行駛速度（km\/h）；由感測器直接取得或以 Haversine 公式從座標推算'),
+  "speed_estimated": zod.boolean().describe('速度是否為推算值（true=座標 Haversine 推算，false=感測器實測）')
+}).describe('單筆搖晃紀錄資料')).min(1).describe('本批次搖晃紀錄陣列（至少一筆）')
+}).describe('分批上傳搖晃紀錄的請求資料')
+
+export const AppendTripRecordsResponse = zod.object({
+  "count": zod.number().describe('本批次成功寫入的筆數'),
+  "total_count": zod.number().describe('行程累積寫入的總筆數（含先前批次）')
+}).describe('分批上傳結果')
+
+
+/**
+ * 行程結束時呼叫，將行程的 end_time 更新為當下時間，
+ * 標記此行程已完成紀錄。
+ * @summary 標記行程結束
+ */
+export const FinishTripParams = zod.object({
+  "trip_id": zod.coerce.string().describe('行程識別碼')
+})
+
+export const FinishTripResponse = zod.object({
+  "success": zod.boolean(),
+  "end_time": zod.string().describe('行程結束時間（ISO 8601）')
+}).describe('行程結束標記結果')
+
+
+/**
  * 更新指定行程的備註文字，傳入 null 可清除備註
  * @summary 更新行程備註
  */

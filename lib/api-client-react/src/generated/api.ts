@@ -20,10 +20,15 @@ import type {
 } from '@tanstack/react-query';
 
 import type {
+  AppendRecordsBody,
+  AppendRecordsResult,
   CumulativeAnalysisRequest,
   CumulativeAnalysisResult,
   ErrorResponse,
+  FinishTripResult,
   HealthStatus,
+  StartTripBody,
+  StartTripResult,
   Trip,
   TripDetail,
   TripUpload,
@@ -286,6 +291,226 @@ export function useGetTrips<TData = Awaited<ReturnType<typeof getTrips>>, TError
 
 
 
+
+export const getStartTripUrl = () => {
+
+
+
+
+  return `/api/trip/start`
+}
+
+/**
+ * 開始紀錄時呼叫，在資料庫建立行程紀錄並回傳 trip_id。
+ * 後續所有分批上傳請求皆需帶入此識別碼。
+ * @summary 建立新行程
+ */
+export const startTrip = async (startTripBody: StartTripBody, options?: RequestInit): Promise<StartTripResult> => {
+
+  return customFetch<StartTripResult>(getStartTripUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(startTripBody)
+  }
+);}
+
+
+
+
+
+export const getStartTripMutationOptions = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof startTrip>>, TError,{data: BodyType<StartTripBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof startTrip>>, TError,{data: BodyType<StartTripBody>}, TContext> => {
+
+const mutationKey = ['startTrip'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof startTrip>>, {data: BodyType<StartTripBody>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  startTrip(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type StartTripMutationResult = NonNullable<Awaited<ReturnType<typeof startTrip>>>
+    export type StartTripMutationBody = BodyType<StartTripBody>
+    export type StartTripMutationError = ErrorType<ErrorResponse>
+
+    /**
+ * @summary 建立新行程
+ */
+export const useStartTrip = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof startTrip>>, TError,{data: BodyType<StartTripBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof startTrip>>,
+        TError,
+        {data: BodyType<StartTripBody>},
+        TContext
+      > => {
+      return useMutation(getStartTripMutationOptions(options));
+    }
+
+export const getAppendTripRecordsUrl = (tripId: string,) => {
+
+
+
+
+  return `/api/trip/${tripId}/append`
+}
+
+/**
+ * 將一批搖晃紀錄追加至指定行程，可重複呼叫多次。
+ * 上傳失敗時前端保留本批次資料，待下次排程時合併重試。
+ * @summary 分批上傳搖晃紀錄
+ */
+export const appendTripRecords = async (tripId: string,
+    appendRecordsBody: AppendRecordsBody, options?: RequestInit): Promise<AppendRecordsResult> => {
+
+  return customFetch<AppendRecordsResult>(getAppendTripRecordsUrl(tripId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(appendRecordsBody)
+  }
+);}
+
+
+
+
+
+export const getAppendTripRecordsMutationOptions = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof appendTripRecords>>, TError,{tripId: string;data: BodyType<AppendRecordsBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof appendTripRecords>>, TError,{tripId: string;data: BodyType<AppendRecordsBody>}, TContext> => {
+
+const mutationKey = ['appendTripRecords'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof appendTripRecords>>, {tripId: string;data: BodyType<AppendRecordsBody>}> = (props) => {
+          const {tripId,data} = props ?? {};
+
+          return  appendTripRecords(tripId,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type AppendTripRecordsMutationResult = NonNullable<Awaited<ReturnType<typeof appendTripRecords>>>
+    export type AppendTripRecordsMutationBody = BodyType<AppendRecordsBody>
+    export type AppendTripRecordsMutationError = ErrorType<ErrorResponse>
+
+    /**
+ * @summary 分批上傳搖晃紀錄
+ */
+export const useAppendTripRecords = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof appendTripRecords>>, TError,{tripId: string;data: BodyType<AppendRecordsBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof appendTripRecords>>,
+        TError,
+        {tripId: string;data: BodyType<AppendRecordsBody>},
+        TContext
+      > => {
+      return useMutation(getAppendTripRecordsMutationOptions(options));
+    }
+
+export const getFinishTripUrl = (tripId: string,) => {
+
+
+
+
+  return `/api/trip/${tripId}/finish`
+}
+
+/**
+ * 行程結束時呼叫，將行程的 end_time 更新為當下時間，
+ * 標記此行程已完成紀錄。
+ * @summary 標記行程結束
+ */
+export const finishTrip = async (tripId: string, options?: RequestInit): Promise<FinishTripResult> => {
+
+  return customFetch<FinishTripResult>(getFinishTripUrl(tripId),
+  {
+    ...options,
+    method: 'PATCH'
+
+
+  }
+);}
+
+
+
+
+
+export const getFinishTripMutationOptions = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof finishTrip>>, TError,{tripId: string}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof finishTrip>>, TError,{tripId: string}, TContext> => {
+
+const mutationKey = ['finishTrip'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof finishTrip>>, {tripId: string}> = (props) => {
+          const {tripId} = props ?? {};
+
+          return  finishTrip(tripId,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type FinishTripMutationResult = NonNullable<Awaited<ReturnType<typeof finishTrip>>>
+
+    export type FinishTripMutationError = ErrorType<ErrorResponse>
+
+    /**
+ * @summary 標記行程結束
+ */
+export const useFinishTrip = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof finishTrip>>, TError,{tripId: string}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof finishTrip>>,
+        TError,
+        {tripId: string},
+        TContext
+      > => {
+      return useMutation(getFinishTripMutationOptions(options));
+    }
 
 export const getUpdateTripNoteUrl = (tripId: string,) => {
 

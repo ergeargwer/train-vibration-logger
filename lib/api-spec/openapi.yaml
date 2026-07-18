@@ -66,6 +66,101 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Trip"
+  /trip/start:
+    post:
+      operationId: startTrip
+      tags: [trips]
+      summary: 建立新行程
+      description: |
+        開始紀錄時呼叫，在資料庫建立行程紀錄並回傳 trip_id。
+        後續所有分批上傳請求皆需帶入此識別碼。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StartTripBody"
+      responses:
+        "201":
+          description: 行程建立成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StartTripResult"
+        "400":
+          description: 資料格式錯誤
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /trip/{trip_id}/append:
+    post:
+      operationId: appendTripRecords
+      tags: [trips]
+      summary: 分批上傳搖晃紀錄
+      description: |
+        將一批搖晃紀錄追加至指定行程，可重複呼叫多次。
+        上傳失敗時前端保留本批次資料，待下次排程時合併重試。
+      parameters:
+        - name: trip_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: 行程識別碼
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AppendRecordsBody"
+      responses:
+        "200":
+          description: 批次寫入成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppendRecordsResult"
+        "400":
+          description: 資料格式錯誤
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: 找不到該行程
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /trip/{trip_id}/finish:
+    patch:
+      operationId: finishTrip
+      tags: [trips]
+      summary: 標記行程結束
+      description: |
+        行程結束時呼叫，將行程的 end_time 更新為當下時間，
+        標記此行程已完成紀錄。
+      parameters:
+        - name: trip_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: 行程識別碼
+      responses:
+        "200":
+          description: 行程結束標記成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinishTripResult"
+        "404":
+          description: 找不到該行程
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /trip/{trip_id}/note:
     patch:
       operationId: updateTripNote
@@ -320,6 +415,68 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ShakeRecord"
+    StartTripBody:
+      type: object
+      description: 建立新行程的請求資料
+      required:
+        - device_id
+      properties:
+        device_id:
+          type: string
+          description: 裝置識別碼（UUID）
+        note:
+          type: string
+          description: 行程備註（可選）
+    StartTripResult:
+      type: object
+      description: 建立行程結果
+      required:
+        - trip_id
+        - start_time
+      properties:
+        trip_id:
+          type: string
+          description: 新建立的行程識別碼
+        start_time:
+          type: string
+          description: 行程開始時間（ISO 8601）
+    AppendRecordsBody:
+      type: object
+      description: 分批上傳搖晃紀錄的請求資料
+      required:
+        - records
+      properties:
+        records:
+          type: array
+          items:
+            $ref: "#/components/schemas/RecordInput"
+          minItems: 1
+          description: 本批次搖晃紀錄陣列（至少一筆）
+    AppendRecordsResult:
+      type: object
+      description: 分批上傳結果
+      required:
+        - count
+        - total_count
+      properties:
+        count:
+          type: integer
+          description: 本批次成功寫入的筆數
+        total_count:
+          type: integer
+          description: 行程累積寫入的總筆數（含先前批次）
+    FinishTripResult:
+      type: object
+      description: 行程結束標記結果
+      required:
+        - success
+        - end_time
+      properties:
+        success:
+          type: boolean
+        end_time:
+          type: string
+          description: 行程結束時間（ISO 8601）
     UpdateNoteBody:
       type: object
       description: 行程備註更新請求

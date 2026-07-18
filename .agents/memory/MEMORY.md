@@ -1,0 +1,1 @@
+- [Orval split-mode index append bug](orval-index-append.md) — orval v8 在 split mode + workspace 下會「追加」到 workspace 層級 index.ts，需 postcodegen 腳本覆寫

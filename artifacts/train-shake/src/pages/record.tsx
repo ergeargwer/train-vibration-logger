@@ -13,7 +13,6 @@ import {
 } from 'chart.js';
 import { useShakeSensor } from '@/hooks/useShakeSensor';
 import { useGeolocation } from '@/hooks/useGeolocation';
-import { useUploadTrip } from '@workspace/api-client-react';
 import { Link, useLocation } from 'wouter';
 import {
   ChevronLeft,
@@ -24,36 +23,88 @@ import {
   Square,
   Activity,
   Gauge,
+  CloudUpload,
+  RefreshCw,
+  WifiOff,
 } from 'lucide-react';
 import type { RecordInput } from '@workspace/api-client-react';
 
-// 注冊 Chart.js 所需元件
+// Chart.js 元件注冊
 Chart.register(
-  LineController,
-  LineElement,
-  PointElement,
-  LinearScale,
-  CategoryScale,
-  Title,
-  Legend,
-  Tooltip,
-  Filler,
+  LineController, LineElement, PointElement, LinearScale,
+  CategoryScale, Title, Legend, Tooltip, Filler,
 );
 
 /** 波形圖最多保留最近 N 秒的資料點 */
 const MAX_CHART_POINTS = 30;
 
-/** 各搖晃等級對應的「搖晃指數」折線顏色 */
+/**
+ * 分批上傳的觸發間隔（毫秒）
+ * 每隔此時間自動將 pendingRecordsRef 中的資料批次上傳一次
+ */
+const BATCH_INTERVAL_MS = 30_000;
+
+/**
+ * 筆數門檻：暫存資料累積達此筆數時立即觸發上傳（不等計時器）
+ * 取 BATCH_INTERVAL_MS 到達與此筆數門檻兩者先到者先觸發
+ */
+const BATCH_SIZE_TRIGGER = 30;
+
+/** 各搖晃等級對應的折線顏色 */
 const SHAKE_LEVEL_COLORS: Record<number, string> = {
-  1: '#22c55e',
-  2: '#84cc16',
-  3: '#eab308',
-  4: '#f97316',
-  5: '#ef4444',
+  1: '#22c55e', 2: '#84cc16', 3: '#eab308', 4: '#f97316', 5: '#ef4444',
 };
 
-/** 速度折線固定色（藍色系，與搖晃指數顏色系列不重疊） */
+/** 速度折線固定色（藍色系） */
 const SPEED_LINE_COLOR = '#3b82f6';
+
+// ─── 後端 API 輔助函式（module-level，不依賴 React 生命週期）─────────────────
+
+/**
+ * 呼叫後端建立新行程，回傳 { trip_id, start_time }
+ * 失敗時拋出錯誤
+ */
+async function apiStartTrip(
+  deviceId: string,
+): Promise<{ trip_id: string; start_time: string }> {
+  const res = await fetch('/api/trip/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ device_id: deviceId }),
+  });
+  if (!res.ok) throw new Error(`建立行程失敗（HTTP ${res.status}）`);
+  return res.json() as Promise<{ trip_id: string; start_time: string }>;
+}
+
+/**
+ * 呼叫後端批次寫入搖晃紀錄（可多次呼叫）
+ * 失敗時拋出錯誤
+ */
+async function apiAppendRecords(
+  tripId: string,
+  records: RecordInput[],
+): Promise<void> {
+  const res = await fetch(`/api/trip/${tripId}/append`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ records }),
+  });
+  if (!res.ok) throw new Error(`批次上傳失敗（HTTP ${res.status}）`);
+}
+
+/**
+ * 呼叫後端標記行程結束
+ * 失敗時拋出錯誤（但呼叫端選擇以 console.error 記錄即可，不阻止後續流程）
+ */
+async function apiFinishTrip(tripId: string): Promise<void> {
+  const res = await fetch(`/api/trip/${tripId}/finish`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+  });
+  if (!res.ok) throw new Error(`標記行程結束失敗（HTTP ${res.status}）`);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 export default function Record() {
   const [, setLocation] = useLocation();
@@ -65,45 +116,54 @@ export default function Record() {
     startRecording,
     stopRecording,
   } = useShakeSensor();
-  const { lat, lng, accuracy, speedKmh, speedEstimated, isSignalLost, status: geoStatus } = useGeolocation();
+  const {
+    lat, lng, accuracy, speedKmh, speedEstimated, isSignalLost, status: geoStatus,
+  } = useGeolocation();
 
-  const uploadTrip = useUploadTrip();
+  // 裝置識別碼（從 localStorage 讀取，首次使用自動產生）
   const [deviceId, setDeviceId] = useState<string>('');
-  const [records, setRecords] = useState<RecordInput[]>([]);
-  const [isUploading, setIsUploading] = useState(false);
-  const [uploadError, setUploadError] = useState<string | null>(null);
+
+  // 上傳狀態（顯示用）
+  const [pendingCount, setPendingCount] = useState(0);          // 等待上傳的筆數
+  const [uploadedCount, setUploadedCount] = useState(0);        // 已成功上傳的筆數
+  const [hasUploadDelay, setHasUploadDelay] = useState(false);  // 部分批次上傳失敗（將自動重試）
+  const [isFinalUploadFailed, setIsFinalUploadFailed] = useState(false); // 結束時最終上傳失敗
+  const [isStartingTrip, setIsStartingTrip] = useState(false);  // 正在向後端建立行程
+  const [isFinishing, setIsFinishing] = useState(false);         // 正在執行最終上傳與結束行程
 
   // Chart.js 參照
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const chartRef = useRef<Chart | null>(null);
 
   /**
-   * 速度與座標的 Ref 橋接
+   * 核心資料 Refs — 解決 stale closure 問題
    *
-   * 問題背景：startRecording 接收的 onTick 回呼在呼叫當下捕捉閉包，
-   * 之後 setInterval 每秒呼叫的都是同一個 onTick，React state 的更新
-   * 無法穿透已建立的閉包，導致 speedKmh / lat / lng 永遠是按下「開始」
-   * 當下的初始值（stale closure）。
+   * 問題背景：
+   *   startRecording 接收的 onTick 回呼在呼叫當下建立閉包快照，
+   *   setInterval 每秒執行的都是同一個閉包實例，React state 的更新
+   *   無法穿透閉包，導致閉包內讀到的值永遠是按下「開始」那一刻的快照。
    *
-   * 修正方式：將這四個會隨時間變化的值同步寫入 ref，
-   * onTick 改讀 ref.current，每次執行都能取得最新值，
-   * 不受閉包捕捉時機限制。
+   *   批次上傳 timer（setInterval）同樣面對相同問題，需要在 callback
+   *   內讀到最新的 pendingRecords 與 tripId。
+   *
+   * 解法：
+   *   將所有需在閉包內讀取最新值的資料，以 useEffect 同步寫入 ref，
+   *   閉包改讀 ref.current，每次執行都能取得最新狀態。
    */
-  const speedKmhRef = useRef<number>(speedKmh);
-  const speedEstimatedRef = useRef<boolean>(speedEstimated);
-  const latRef = useRef<number | null>(lat);
-  const lngRef = useRef<number | null>(lng);
+  const speedKmhRef        = useRef<number>(speedKmh);
+  const speedEstimatedRef  = useRef<boolean>(speedEstimated);
+  const latRef             = useRef<number | null>(lat);
+  const lngRef             = useRef<number | null>(lng);
+  const isSignalLostRef    = useRef<boolean>(false);
+  const pendingRecordsRef  = useRef<RecordInput[]>([]);          // 實際待上傳資料陣列
+  const currentTripIdRef   = useRef<string | null>(null);        // 目前行程識別碼
+  const isUploadingBatchRef = useRef<boolean>(false);            // 防止同時發出多個上傳請求
+  const batchIntervalRef   = useRef<ReturnType<typeof setInterval> | null>(null); // 定時上傳 timer
 
   useEffect(() => { speedKmhRef.current = speedKmh; }, [speedKmh]);
   useEffect(() => { speedEstimatedRef.current = speedEstimated; }, [speedEstimated]);
   useEffect(() => { latRef.current = lat; }, [lat]);
   useEffect(() => { lngRef.current = lng; }, [lng]);
-
-  /**
-   * 訊號中斷狀態 Ref
-   * isSignalLost state 由 useGeolocation 維護，這裡用 ref 讓 onTick 閉包讀到最新值
-   */
-  const isSignalLostRef = useRef<boolean>(false);
   useEffect(() => { isSignalLostRef.current = isSignalLost; }, [isSignalLost]);
 
   // 初始化裝置識別碼
@@ -120,7 +180,6 @@ export default function Record() {
    * 初始化雙Y軸波形圖
    *   左側 Y 軸（y_shake）：綜合搖晃指數
    *   右側 Y 軸（y_speed）：速度（km/h）
-   * 元件卸載時銷毀圖表實例，避免 canvas 記憶體洩漏
    */
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -154,7 +213,7 @@ export default function Record() {
             pointHoverRadius: 4,
             tension: 0.3,
             fill: false,
-            spanGaps: false,  // null 值顯示為折線斷開（訊號中斷期間）
+            spanGaps: false,
             yAxisID: 'y_speed',
           },
         ],
@@ -163,10 +222,7 @@ export default function Record() {
         responsive: true,
         maintainAspectRatio: false,
         animation: { duration: 0 },
-        interaction: {
-          mode: 'index',
-          intersect: false,
-        },
+        interaction: { mode: 'index', intersect: false },
         plugins: {
           title: {
             display: true,
@@ -179,19 +235,12 @@ export default function Record() {
             display: true,
             position: 'top',
             align: 'end',
-            labels: {
-              font: { size: 11 },
-              color: '#6b7280',
-              boxWidth: 12,
-              padding: 10,
-            },
+            labels: { font: { size: 11 }, color: '#6b7280', boxWidth: 12, padding: 10 },
           },
           tooltip: {
             callbacks: {
               label: (ctx) => {
-                if (ctx.datasetIndex === 0) {
-                  return `搖晃指數：${(ctx.raw as number).toFixed(3)}`;
-                }
+                if (ctx.datasetIndex === 0) return `搖晃指數：${(ctx.raw as number).toFixed(3)}`;
                 return `速度：${(ctx.raw as number).toFixed(1)} km/h`;
               },
             },
@@ -199,68 +248,38 @@ export default function Record() {
         },
         scales: {
           x: {
-            ticks: {
-              font: { size: 10 },
-              color: '#9ca3af',
-              maxTicksLimit: 6,
-              maxRotation: 0,
-            },
+            ticks: { font: { size: 10 }, color: '#9ca3af', maxTicksLimit: 6, maxRotation: 0 },
             grid: { color: 'rgba(0,0,0,0.05)' },
           },
           y_shake: {
             type: 'linear',
             position: 'left',
             min: 0,
-            title: {
-              display: true,
-              text: '搖晃指數',
-              font: { size: 10 },
-              color: '#6b7280',
-            },
-            ticks: {
-              font: { size: 10 },
-              color: '#9ca3af',
-            },
+            title: { display: true, text: '搖晃指數', font: { size: 10 }, color: '#6b7280' },
+            ticks: { font: { size: 10 }, color: '#9ca3af' },
             grid: { color: 'rgba(0,0,0,0.05)' },
           },
           y_speed: {
             type: 'linear',
             position: 'right',
             min: 0,
-            title: {
-              display: true,
-              text: '速度 (km/h)',
-              font: { size: 10 },
-              color: '#6b7280',
-            },
-            ticks: {
-              font: { size: 10 },
-              color: '#9ca3af',
-            },
-            // 右側 Y 軸的格線不重複繪製，避免視覺干擾
+            title: { display: true, text: '速度 (km/h)', font: { size: 10 }, color: '#6b7280' },
+            ticks: { font: { size: 10 }, color: '#9ca3af' },
             grid: { drawOnChartArea: false },
           },
         },
       },
     });
 
-    return () => {
-      chartRef.current?.destroy();
-      chartRef.current = null;
-    };
+    return () => { chartRef.current?.destroy(); chartRef.current = null; };
   }, []);
 
   /**
-   * 將新的一秒資料推入波形圖
-   * 超過 MAX_CHART_POINTS 時移除最舊的點
-   * 使用 chart.update('none') 直接渲染，不執行動畫，效能最佳
-   */
-  /**
-   * 將新資料點推入雙Y軸波形圖
+   * 將新資料點推入波形圖
    *
    * shakeIndex / speed 可傳入 null：
-   *   null 代表訊號中斷期間的空白點，Chart.js 配合 spanGaps: false
-   *   會在該時間區間顯示折線斷開，不用直線連接中斷前後的數值。
+   *   null 代表訊號中斷期間的空白點，配合 spanGaps: false
+   *   讓 Chart.js 以折線斷開呈現，不連接中斷前後的數值。
    */
   const pushToChart = useCallback(
     (shakeIndex: number | null, level: number, speed: number | null, timeLabel: string) => {
@@ -281,7 +300,7 @@ export default function Record() {
         (speedDataset.data as (number | null)[]).shift();
       }
 
-      // 僅在有實際數值時才更新搖晃等級顏色（null 表示中斷期間，不更新）
+      // 僅在有實際數值時才更新搖晃等級顏色（null 代表中斷期間，不更新）
       if (shakeIndex !== null) {
         shakeDataset.borderColor = SHAKE_LEVEL_COLORS[level] ?? SHAKE_LEVEL_COLORS[1];
         shakeDataset.backgroundColor = `${SHAKE_LEVEL_COLORS[level] ?? SHAKE_LEVEL_COLORS[1]}14`;
@@ -292,8 +311,57 @@ export default function Record() {
     [],
   );
 
-  const handleStart = useCallback(() => {
-    // 清空波形圖資料
+  /**
+   * 將 pendingRecordsRef 中的待上傳資料批次送出
+   *
+   * 設計原則：
+   *   1. isUploadingBatchRef 作為互斥鎖，防止同一時間多個請求同時發出
+   *   2. 上傳前先複製一份快照（batch），上傳期間新推入的資料不受影響
+   *   3. 上傳成功：以 slice(batch.length) 移除已上傳部分，保留新資料
+   *   4. 上傳失敗：保留全部資料（原批次 + 新資料），下次排程時一併重試
+   *
+   * 此函式設計為可安全地從 interval timer 與 onTick（達到筆數門檻時）兩處呼叫。
+   */
+  const flushBatch = useCallback(async (tripId: string): Promise<boolean> => {
+    if (isUploadingBatchRef.current) return false;   // 已有上傳進行中，略過本次
+    if (pendingRecordsRef.current.length === 0) return true;
+
+    isUploadingBatchRef.current = true;
+    const batch = [...pendingRecordsRef.current];    // 取快照
+
+    try {
+      await apiAppendRecords(tripId, batch);
+
+      // 上傳成功：移除已上傳的部分，保留上傳期間新加入的資料
+      pendingRecordsRef.current = pendingRecordsRef.current.slice(batch.length);
+      setPendingCount(pendingRecordsRef.current.length);
+      setUploadedCount((n) => n + batch.length);
+      setHasUploadDelay(false);
+      return true;
+    } catch {
+      // 上傳失敗：保留全部資料（含原批次），下次排程時合併重試
+      setHasUploadDelay(true);
+      return false;
+    } finally {
+      isUploadingBatchRef.current = false;
+    }
+  }, []);
+
+  /**
+   * 開始紀錄
+   *
+   * 流程：
+   *   1. 呼叫 POST /api/trip/start，建立行程並取得 trip_id
+   *   2. 啟動感測器（useShakeSensor.startRecording），每秒觸發 onTick
+   *   3. 啟動 BATCH_INTERVAL_MS 定時器，定期批次上傳 pendingRecordsRef
+   *
+   * onTick 每秒執行一次：
+   *   - GPS 訊號中斷時：推入 null 讓波形圖折線斷開，不寫入紀錄
+   *   - 正常時：推入資料到 pendingRecordsRef 並更新波形圖
+   *   - 達到 BATCH_SIZE_TRIGGER 筆時：立即觸發批次上傳（不等計時器）
+   */
+  const handleStart = useCallback(async () => {
+    // 清空波形圖
     const chart = chartRef.current;
     if (chart) {
       chart.data.labels = [];
@@ -303,9 +371,30 @@ export default function Record() {
       chart.update('none');
     }
 
-    setRecords([]);
-    setUploadError(null);
+    // 重置所有上傳狀態
+    pendingRecordsRef.current = [];
+    isUploadingBatchRef.current = false;
+    setPendingCount(0);
+    setUploadedCount(0);
+    setHasUploadDelay(false);
+    setIsFinalUploadFailed(false);
 
+    // 步驟一：向後端建立行程
+    setIsStartingTrip(true);
+    let tripId: string;
+    try {
+      const result = await apiStartTrip(deviceId);
+      tripId = result.trip_id;
+    } catch (err) {
+      setIsStartingTrip(false);
+      console.error('建立行程失敗：', err);
+      alert('無法建立行程，請確認網路連線後再試。');
+      return;
+    }
+    currentTripIdRef.current = tripId;
+    setIsStartingTrip(false);
+
+    // 步驟二：啟動感測器
     startRecording((data) => {
       const now = new Date();
       const timeLabel =
@@ -313,14 +402,13 @@ export default function Record() {
         `${String(now.getMinutes()).padStart(2, '0')}:` +
         `${String(now.getSeconds()).padStart(2, '0')}`;
 
-      // ref.current 在每次 interval 觸發時都反映最新值，
-      // 不受閉包建立時的快照限制
+      // ref.current 每次執行都反映最新值，不受閉包捕捉時機限制
       const currentSpeed = speedKmhRef.current;
       const currentSpeedEstimated = speedEstimatedRef.current;
       const currentLat = latRef.current;
       const currentLng = lngRef.current;
 
-      // 訊號中斷（進入地下路段）：推入 null 讓波形圖顯示資料斷開，不寫入紀錄
+      // 訊號中斷（進入地下路段）：推入 null 讓波形圖折線斷開，不寫入紀錄
       if (isSignalLostRef.current) {
         pushToChart(null, 1, null, timeLabel);
         return;
@@ -329,56 +417,144 @@ export default function Record() {
       pushToChart(data.shake_index, data.shake_level, currentSpeed, timeLabel);
 
       if (currentLat !== null && currentLng !== null) {
-        setRecords((prev) => [
-          ...prev,
-          {
-            lat: currentLat,
-            lng: currentLng,
-            timestamp: now.toISOString(),
-            x_accel: data.x_accel,
-            z_accel: data.z_accel,
-            shake_index: data.shake_index,
-            shake_level: data.shake_level,
-            speed_kmh: currentSpeed,
-            speed_estimated: currentSpeedEstimated,
-          },
-        ]);
+        const record: RecordInput = {
+          lat: currentLat,
+          lng: currentLng,
+          timestamp: now.toISOString(),
+          x_accel: data.x_accel,
+          z_accel: data.z_accel,
+          shake_index: data.shake_index,
+          shake_level: data.shake_level,
+          speed_kmh: currentSpeed,
+          speed_estimated: currentSpeedEstimated,
+        };
+
+        pendingRecordsRef.current.push(record);
+        setPendingCount((n) => n + 1);
+
+        // 達到筆數門檻：立即觸發批次上傳
+        if (
+          pendingRecordsRef.current.length >= BATCH_SIZE_TRIGGER &&
+          currentTripIdRef.current
+        ) {
+          flushBatch(currentTripIdRef.current);
+        }
       }
     });
-    // speedKmh / speedEstimated / lat / lng 已改由 ref 讀取，
-    // 不再需要列入依賴陣列，避免每次 GPS 更新都重建回呼
-  }, [startRecording, pushToChart]);
 
+    // 步驟三：啟動定時批次上傳
+    batchIntervalRef.current = setInterval(() => {
+      if (pendingRecordsRef.current.length > 0 && currentTripIdRef.current) {
+        flushBatch(currentTripIdRef.current);
+      }
+    }, BATCH_INTERVAL_MS);
+
+    // startRecording / pushToChart / deviceId / flushBatch 均為穩定參照或 module-level，
+    // speedKmh 等 GPS 值改由 ref 讀取，不須列入依賴陣列
+  }, [startRecording, pushToChart, deviceId, flushBatch]);
+
+  /**
+   * 等待目前批次上傳完成後，執行最終批次上傳
+   * 若等待超過 10 秒（網路極慢或卡死），視為失敗
+   */
+  const flushFinal = useCallback(async (tripId: string): Promise<boolean> => {
+    if (isUploadingBatchRef.current) {
+      const released = await new Promise<boolean>((resolve) => {
+        let elapsed = 0;
+        const check = setInterval(() => {
+          elapsed += 100;
+          if (!isUploadingBatchRef.current) {
+            clearInterval(check);
+            resolve(true);
+          } else if (elapsed >= 10_000) {
+            clearInterval(check);
+            resolve(false);
+          }
+        }, 100);
+      });
+      if (!released) return false;
+    }
+
+    if (pendingRecordsRef.current.length === 0) return true;
+    return flushBatch(tripId);
+  }, [flushBatch]);
+
+  /**
+   * 結束紀錄
+   *
+   * 流程：
+   *   1. 停止感測器
+   *   2. 停止定時批次上傳 timer
+   *   3. 最後一次批次上傳（flushFinal，包含所有剩餘 pending 資料）
+   *   4. 若上傳失敗：停留在頁面，顯示「重新嘗試上傳」按鈕
+   *   5. 呼叫 PATCH /api/trip/:id/finish，標記行程結束時間
+   *   6. 跳轉至地圖頁面
+   *
+   * 步驟 5 失敗（finish API）不阻止頁面跳轉，因資料已安全寫入 records 表。
+   */
   const handleStop = useCallback(async () => {
     stopRecording();
 
-    if (records.length === 0) {
-      alert('無有效紀錄資料（請確認 GPS 已定位且感測器已授權）');
+    // 停止定時批次上傳
+    if (batchIntervalRef.current) {
+      clearInterval(batchIntervalRef.current);
+      batchIntervalRef.current = null;
+    }
+
+    const tripId = currentTripIdRef.current;
+    if (!tripId) return;  // 行程尚未建立（例如建立失敗後立即停止）
+
+    setIsFinishing(true);
+
+    // 最終上傳
+    const uploadOk = await flushFinal(tripId);
+    if (!uploadOk) {
+      setIsFinishing(false);
+      setIsFinalUploadFailed(true);
+      return;  // 停留在頁面，等待使用者手動重試
+    }
+
+    // 標記行程結束（失敗不影響資料完整性）
+    try {
+      await apiFinishTrip(tripId);
+    } catch (err) {
+      console.error('標記行程結束失敗（資料已完整寫入，不影響後續分析）：', err);
+    }
+
+    setIsFinishing(false);
+    currentTripIdRef.current = null;
+    setLocation('/map');
+  }, [stopRecording, setLocation, flushFinal]);
+
+  /**
+   * 手動重試最終上傳（最後批次失敗時顯示的重試按鈕觸發）
+   */
+  const handleRetryFinalUpload = useCallback(async () => {
+    const tripId = currentTripIdRef.current;
+    if (!tripId) return;
+
+    setIsFinishing(true);
+    setIsFinalUploadFailed(false);
+
+    const uploadOk = await flushFinal(tripId);
+    if (!uploadOk) {
+      setIsFinishing(false);
+      setIsFinalUploadFailed(true);
       return;
     }
 
-    setIsUploading(true);
-    setUploadError(null);
-    const trip_id = crypto.randomUUID();
+    try {
+      await apiFinishTrip(tripId);
+    } catch (err) {
+      console.error('標記行程結束失敗：', err);
+    }
 
-    uploadTrip.mutate(
-      { data: { device_id: deviceId, trip_id, records } },
-      {
-        onSuccess: () => {
-          setIsUploading(false);
-          alert('上傳成功');
-          setLocation('/map');
-        },
-        onError: (error) => {
-          setIsUploading(false);
-          setUploadError('上傳失敗，請檢查網路連線。');
-          console.error('上傳錯誤：', error);
-        },
-      },
-    );
-  }, [stopRecording, records, deviceId, uploadTrip, setLocation]);
+    setIsFinishing(false);
+    currentTripIdRef.current = null;
+    setLocation('/map');
+  }, [flushFinal, setLocation]);
 
-  // 搖晃等級對應的文字顏色
+  // 搖晃等級 → CSS 輔助函式
   const getLevelColor = (level: number) => {
     switch (level) {
       case 1: return 'text-chart-1';
@@ -411,6 +587,8 @@ export default function Record() {
       default: return '尚未開始紀錄';
     }
   };
+
+  const totalRecordCount = uploadedCount + pendingCount;
 
   return (
     <div className="min-h-[100dvh] flex flex-col bg-background">
@@ -482,6 +660,72 @@ export default function Record() {
           </div>
         )}
 
+        {/* 即時上傳狀態（紀錄進行中，最終上傳未失敗時顯示） */}
+        {isRecording && !isFinalUploadFailed && (
+          <div className={`p-3 rounded-lg border flex items-start gap-3 ${
+            hasUploadDelay
+              ? 'bg-chart-3/10 border-chart-3/30'
+              : 'bg-primary/5 border-primary/20'
+          }`}>
+            <CloudUpload className={`w-4 h-4 shrink-0 mt-0.5 ${
+              hasUploadDelay ? 'text-chart-3' : 'text-primary'
+            }`} />
+            <div className="flex flex-col flex-1">
+              {hasUploadDelay ? (
+                <>
+                  <span className="text-sm font-semibold text-chart-3">
+                    部分資料上傳延遲，將自動重試
+                  </span>
+                  <span className="text-xs text-chart-3/80 mt-0.5">
+                    已上傳 {uploadedCount} 筆　等待上傳 {pendingCount} 筆
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span className="text-sm font-medium text-primary">即時上傳中</span>
+                  <span className="text-xs text-muted-foreground mt-0.5">
+                    已上傳 {uploadedCount} 筆　等待上傳 {pendingCount} 筆
+                  </span>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* 最終上傳失敗提示（結束行程後仍有資料未送出） */}
+        {isFinalUploadFailed && (
+          <div className="bg-destructive/10 border border-destructive/30 p-4 rounded-lg flex flex-col gap-3">
+            <div className="flex items-start gap-3">
+              <WifiOff className="w-5 h-5 text-destructive shrink-0 mt-0.5" />
+              <div className="flex flex-col">
+                <span className="text-sm font-bold text-destructive">
+                  有 {pendingCount} 筆資料尚未成功上傳
+                </span>
+                <span className="text-xs text-destructive/80 mt-1">
+                  請確認網路連線後，點擊下方按鈕重新嘗試。請勿離開此頁面，否則未上傳的資料將遺失。
+                </span>
+              </div>
+            </div>
+            <button
+              onClick={handleRetryFinalUpload}
+              disabled={isFinishing}
+              className="flex items-center justify-center gap-2 w-full py-2.5 bg-destructive text-destructive-foreground rounded-lg font-medium text-sm disabled:opacity-50 transition-transform active:scale-[0.98]"
+            >
+              {isFinishing ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  上傳中...
+                </>
+              ) : (
+                <>
+                  <RefreshCw className="w-4 h-4" />
+                  重新嘗試上傳（{pendingCount} 筆）
+                </>
+              )}
+            </button>
+          </div>
+        )}
+
         {/* 搖晃等級主卡片 */}
         <div
           className={`flex flex-col items-center justify-center p-6 rounded-xl border-2 transition-colors duration-500 ${
@@ -512,7 +756,7 @@ export default function Record() {
             <div className="flex flex-col items-center">
               <span className="text-xs text-muted-foreground mb-1">已紀錄</span>
               <span className="font-mono font-semibold text-foreground">
-                {records.length} 筆
+                {totalRecordCount} 筆
               </span>
             </div>
             <div className="flex flex-col items-center">
@@ -577,36 +821,55 @@ export default function Record() {
           )}
         </div>
 
-        {uploadError && (
-          <div className="text-destructive text-sm text-center font-medium bg-destructive/10 rounded-lg p-3 border border-destructive/20">
-            {uploadError}
-          </div>
-        )}
-
       </main>
 
       {/* 底部控制按鈕 */}
       <footer className="p-4 border-t bg-card shrink-0 pb-safe">
-        {!isRecording ? (
+        {/* 正在紀錄中且最終上傳未失敗：顯示「結束紀錄」按鈕 */}
+        {isRecording && !isFinalUploadFailed && (
+          <button
+            onClick={handleStop}
+            disabled={isFinishing}
+            className="w-full h-14 bg-destructive text-destructive-foreground rounded-lg font-bold text-lg flex items-center justify-center gap-2 transition-transform active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none"
+            data-testid="button-stop-recording"
+          >
+            {isFinishing ? (
+              <>
+                <RefreshCw className="w-5 h-5 animate-spin" />
+                上傳最後批次中...
+              </>
+            ) : (
+              <>
+                <Square className="w-5 h-5 fill-current" />
+                結束紀錄
+              </>
+            )}
+          </button>
+        )}
+
+        {/* 未在紀錄中且最終上傳未失敗：顯示「開始紀錄」按鈕 */}
+        {!isRecording && !isFinalUploadFailed && (
           <button
             onClick={handleStart}
-            disabled={permission !== 'granted' || geoStatus === 'unavailable' || isUploading}
+            disabled={permission !== 'granted' || geoStatus === 'unavailable' || isStartingTrip}
             className="w-full h-14 bg-primary text-primary-foreground rounded-lg font-bold text-lg flex items-center justify-center gap-2 transition-transform active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none"
             data-testid="button-start-recording"
           >
-            <Play className="w-5 h-5 fill-current" />
-            開始紀錄
-          </button>
-        ) : (
-          <button
-            onClick={handleStop}
-            className="w-full h-14 bg-destructive text-destructive-foreground rounded-lg font-bold text-lg flex items-center justify-center gap-2 transition-transform active:scale-[0.98]"
-            data-testid="button-stop-recording"
-          >
-            <Square className="w-5 h-5 fill-current" />
-            結束紀錄並上傳
+            {isStartingTrip ? (
+              <>
+                <RefreshCw className="w-5 h-5 animate-spin" />
+                建立行程中...
+              </>
+            ) : (
+              <>
+                <Play className="w-5 h-5 fill-current" />
+                開始紀錄
+              </>
+            )}
           </button>
         )}
+
+        {/* 最終上傳失敗：底部不顯示按鈕（已在主體內顯示重試區塊） */}
       </footer>
     </div>
   );

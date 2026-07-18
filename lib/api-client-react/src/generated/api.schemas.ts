@@ -111,6 +111,56 @@ export interface TripDetail {
 }
 
 /**
+ * 建立新行程的請求資料
+ */
+export interface StartTripBody {
+  /** 裝置識別碼（UUID） */
+  device_id: string;
+  /** 行程備註（可選） */
+  note?: string;
+}
+
+/**
+ * 建立行程結果
+ */
+export interface StartTripResult {
+  /** 新建立的行程識別碼 */
+  trip_id: string;
+  /** 行程開始時間（ISO 8601） */
+  start_time: string;
+}
+
+/**
+ * 分批上傳搖晃紀錄的請求資料
+ */
+export interface AppendRecordsBody {
+  /**
+     * 本批次搖晃紀錄陣列（至少一筆）
+     * @minItems 1
+     */
+  records: RecordInput[];
+}
+
+/**
+ * 分批上傳結果
+ */
+export interface AppendRecordsResult {
+  /** 本批次成功寫入的筆數 */
+  count: number;
+  /** 行程累積寫入的總筆數（含先前批次） */
+  total_count: number;
+}
+
+/**
+ * 行程結束標記結果
+ */
+export interface FinishTripResult {
+  success: boolean;
+  /** 行程結束時間（ISO 8601） */
+  end_time: string;
+}
+
+/**
  * 行程備註更新請求
  */
 export interface UpdateNoteBody {

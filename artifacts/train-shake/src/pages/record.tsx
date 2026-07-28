@@ -131,6 +131,22 @@ export default function Record() {
   const [isStartingTrip, setIsStartingTrip] = useState(false);  // 正在向後端建立行程
   const [isFinishing, setIsFinishing] = useState(false);         // 正在執行最終上傳與結束行程
 
+  /**
+   * Screen Wake Lock 相關狀態
+   *
+   * wakeLockSupported：瀏覽器是否支援 Screen Wake Lock API
+   *   以 useState 初始化函式計算，組件掛載後固定不再改變。
+   *   部分舊版 iOS Safari 或非主流瀏覽器可能不支援。
+   *
+   * wakeLockFailedOnResume：使用者切換 App 後切回頁面，
+   *   系統自動釋放原本的 wake lock，嘗試重新請求但失敗時設為 true。
+   *   此時顯示提示請使用者自行留意螢幕不要關閉。
+   */
+  const [wakeLockSupported] = useState<boolean>(
+    () => typeof navigator !== 'undefined' && 'wakeLock' in navigator,
+  );
+  const [wakeLockFailedOnResume, setWakeLockFailedOnResume] = useState(false);
+
   // Chart.js 參照
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const chartRef = useRef<Chart | null>(null);
@@ -143,8 +159,7 @@ export default function Record() {
    *   setInterval 每秒執行的都是同一個閉包實例，React state 的更新
    *   無法穿透閉包，導致閉包內讀到的值永遠是按下「開始」那一刻的快照。
    *
-   *   批次上傳 timer（setInterval）同樣面對相同問題，需要在 callback
-   *   內讀到最新的 pendingRecords 與 tripId。
+   *   批次上傳 timer 與 visibilitychange 事件回呼同樣面對相同問題。
    *
    * 解法：
    *   將所有需在閉包內讀取最新值的資料，以 useEffect 同步寫入 ref，
@@ -160,11 +175,27 @@ export default function Record() {
   const isUploadingBatchRef = useRef<boolean>(false);            // 防止同時發出多個上傳請求
   const batchIntervalRef   = useRef<ReturnType<typeof setInterval> | null>(null); // 定時上傳 timer
 
+  /**
+   * Screen Wake Lock Refs
+   *
+   * wakeLockRef：持有目前作用中的 WakeLockSentinel 物件。
+   *   使用 any 以相容不同版本的 TypeScript DOM 型別定義；
+   *   Screen Wake Lock API 為瀏覽器原生 API，不需第三方套件。
+   *
+   * isRecordingRef：讓 visibilitychange 回呼（在閉包外建立）能讀到最新的紀錄狀態，
+   *   避免因閉包捕捉問題導致判斷錯誤。
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const wakeLockRef        = useRef<any>(null);
+  const isRecordingRef     = useRef<boolean>(false);
+
   useEffect(() => { speedKmhRef.current = speedKmh; }, [speedKmh]);
   useEffect(() => { speedEstimatedRef.current = speedEstimated; }, [speedEstimated]);
   useEffect(() => { latRef.current = lat; }, [lat]);
   useEffect(() => { lngRef.current = lng; }, [lng]);
   useEffect(() => { isSignalLostRef.current = isSignalLost; }, [isSignalLost]);
+  // isRecordingRef 需與 isRecording state 保持同步，供 visibilitychange 回呼讀取
+  useEffect(() => { isRecordingRef.current = isRecording; }, [isRecording]);
 
   // 初始化裝置識別碼
   useEffect(() => {
@@ -347,6 +378,84 @@ export default function Record() {
     }
   }, []);
 
+  // ─── Screen Wake Lock 操作函式 ───────────────────────────────────────────────
+
+  /**
+   * 請求螢幕常亮（Screen Wake Lock）
+   *
+   * 成功時將 WakeLockSentinel 存入 wakeLockRef，並監聽系統自動釋放事件。
+   * 失敗時（裝置電量過低、使用者拒絕等情況），靜默失敗並回傳 false，
+   * 不影響紀錄功能本身，UI 另行顯示對應提示。
+   */
+  const requestWakeLock = useCallback(async (): Promise<boolean> => {
+    if (!wakeLockSupported) return false;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const sentinel = await (navigator as any).wakeLock.request('screen');
+      wakeLockRef.current = sentinel;
+      // WakeLockSentinel 被系統釋放時（進入背景、低電量等）自動清除 ref
+      sentinel.addEventListener('release', () => {
+        if (wakeLockRef.current === sentinel) {
+          wakeLockRef.current = null;
+        }
+      });
+      setWakeLockFailedOnResume(false);
+      return true;
+    } catch {
+      // 請求失敗（例如裝置電量過低時系統拒絕）
+      wakeLockRef.current = null;
+      return false;
+    }
+  }, [wakeLockSupported]);
+
+  /**
+   * 釋放螢幕常亮（Screen Wake Lock）
+   *
+   * 紀錄結束時呼叫，釋放 WakeLockSentinel 並清除 ref。
+   * 若 sentinel 已被系統釋放（ref 為 null），此呼叫為無操作。
+   */
+  const releaseWakeLock = useCallback(async (): Promise<void> => {
+    if (!wakeLockRef.current) return;
+    try {
+      await wakeLockRef.current.release();
+    } catch {
+      // 釋放失敗可忽略，sentinel 已失效或系統已自動釋放
+    }
+    wakeLockRef.current = null;
+    setWakeLockFailedOnResume(false);
+  }, []);
+
+  /**
+   * 監聽頁面可見性變化，在頁面從背景切回前景時重新請求 Wake Lock
+   *
+   * 背景原因：
+   *   瀏覽器規範規定，頁面進入背景（visibilityState = 'hidden'）時，
+   *   系統會自動釋放 Screen Wake Lock。使用者切換其他 App 後切回時，
+   *   若紀錄仍在進行中，必須重新請求才能繼續防止螢幕熄滅。
+   *
+   * 失敗處理：
+   *   重新請求失敗（例如切回時電量已低）時，設定 wakeLockFailedOnResume = true，
+   *   在頁面顯示警告提示，請使用者自行留意不要讓螢幕關閉。
+   */
+  useEffect(() => {
+    const handleVisibilityChange = async () => {
+      if (document.visibilityState === 'visible' && isRecordingRef.current) {
+        // 頁面切回前景且紀錄仍在進行中，嘗試重新請求 wake lock
+        const ok = await requestWakeLock();
+        if (!ok) {
+          setWakeLockFailedOnResume(true);
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [requestWakeLock]);
+
+  // ─────────────────────────────────────────────────────────────────────────────
+
   /**
    * 開始紀錄
    *
@@ -354,6 +463,7 @@ export default function Record() {
    *   1. 呼叫 POST /api/trip/start，建立行程並取得 trip_id
    *   2. 啟動感測器（useShakeSensor.startRecording），每秒觸發 onTick
    *   3. 啟動 BATCH_INTERVAL_MS 定時器，定期批次上傳 pendingRecordsRef
+   *   4. 請求螢幕常亮（Screen Wake Lock），防止手機螢幕熄滅中斷紀錄
    *
    * onTick 每秒執行一次：
    *   - GPS 訊號中斷時：推入 null 讓波形圖折線斷開，不寫入紀錄
@@ -449,9 +559,11 @@ export default function Record() {
       }
     }, BATCH_INTERVAL_MS);
 
-    // startRecording / pushToChart / deviceId / flushBatch 均為穩定參照或 module-level，
-    // speedKmh 等 GPS 值改由 ref 讀取，不須列入依賴陣列
-  }, [startRecording, pushToChart, deviceId, flushBatch]);
+    // 步驟四：請求螢幕常亮
+    // 防止手機螢幕自動熄滅，避免瀏覽器暫停分頁導致 GPS 與感測器停止擷取。
+    // 若瀏覽器不支援或請求失敗，不影響紀錄功能，UI 另行顯示對應提示。
+    requestWakeLock();
+  }, [startRecording, pushToChart, deviceId, flushBatch, requestWakeLock]);
 
   /**
    * 等待目前批次上傳完成後，執行最終批次上傳
@@ -485,12 +597,13 @@ export default function Record() {
    * 流程：
    *   1. 停止感測器
    *   2. 停止定時批次上傳 timer
-   *   3. 最後一次批次上傳（flushFinal，包含所有剩餘 pending 資料）
-   *   4. 若上傳失敗：停留在頁面，顯示「重新嘗試上傳」按鈕
-   *   5. 呼叫 PATCH /api/trip/:id/finish，標記行程結束時間
-   *   6. 跳轉至地圖頁面
+   *   3. 釋放螢幕常亮（紀錄已結束，不再需要保持螢幕開啟）
+   *   4. 最後一次批次上傳（flushFinal，包含所有剩餘 pending 資料）
+   *   5. 若上傳失敗：停留在頁面，顯示「重新嘗試上傳」按鈕
+   *   6. 呼叫 PATCH /api/trip/:id/finish，標記行程結束時間
+   *   7. 跳轉至地圖頁面
    *
-   * 步驟 5 失敗（finish API）不阻止頁面跳轉，因資料已安全寫入 records 表。
+   * 步驟 6 失敗（finish API）不阻止頁面跳轉，因資料已安全寫入 records 表。
    */
   const handleStop = useCallback(async () => {
     stopRecording();
@@ -500,6 +613,9 @@ export default function Record() {
       clearInterval(batchIntervalRef.current);
       batchIntervalRef.current = null;
     }
+
+    // 釋放螢幕常亮資源（紀錄已結束，避免不必要耗電）
+    releaseWakeLock();
 
     const tripId = currentTripIdRef.current;
     if (!tripId) return;  // 行程尚未建立（例如建立失敗後立即停止）
@@ -524,7 +640,7 @@ export default function Record() {
     setIsFinishing(false);
     currentTripIdRef.current = null;
     setLocation('/map');
-  }, [stopRecording, setLocation, flushFinal]);
+  }, [stopRecording, setLocation, flushFinal, releaseWakeLock]);
 
   /**
    * 手動重試最終上傳（最後批次失敗時顯示的重試按鈕觸發）
@@ -551,8 +667,10 @@ export default function Record() {
 
     setIsFinishing(false);
     currentTripIdRef.current = null;
+    // 上傳完成，確保釋放螢幕常亮資源（stop 時已釋放，此為防禦性呼叫）
+    releaseWakeLock();
     setLocation('/map');
-  }, [flushFinal, setLocation]);
+  }, [flushFinal, setLocation, releaseWakeLock]);
 
   // 搖晃等級 → CSS 輔助函式
   const getLevelColor = (level: number) => {
@@ -657,6 +775,26 @@ export default function Record() {
                     : '無法取得 GPS 位置，請確認已開啟定位服務與應用程式權限。'}
               </span>
             </div>
+          </div>
+        )}
+
+        {/* 瀏覽器不支援螢幕常亮功能提示（紀錄中才顯示） */}
+        {isRecording && !wakeLockSupported && (
+          <div className="bg-secondary p-3 rounded-lg border flex items-start gap-3">
+            <AlertTriangle className="w-4 h-4 text-chart-3 shrink-0 mt-0.5" />
+            <span className="text-xs text-muted-foreground">
+              此瀏覽器不支援防止螢幕熄滅功能，請自行保持螢幕開啟。
+            </span>
+          </div>
+        )}
+
+        {/* 螢幕常亮重新請求失敗提示（切換 App 後返回，重新請求失敗） */}
+        {isRecording && wakeLockSupported && wakeLockFailedOnResume && (
+          <div className="bg-secondary p-3 rounded-lg border flex items-start gap-3">
+            <AlertTriangle className="w-4 h-4 text-chart-3 shrink-0 mt-0.5" />
+            <span className="text-xs text-muted-foreground">
+              螢幕保持喚醒失敗，請留意勿讓螢幕關閉，否則紀錄可能中斷。
+            </span>
           </div>
         )}
 
@@ -825,6 +963,12 @@ export default function Record() {
 
       {/* 底部控制按鈕 */}
       <footer className="p-4 border-t bg-card shrink-0 pb-safe">
+
+        {/* 螢幕提示：請勿關閉螢幕或切換其他 App（按鈕上方固定顯示） */}
+        <p className="text-xs text-center text-muted-foreground mb-3">
+          紀錄進行中請勿手動關閉螢幕或切換其他 App，以免中斷紀錄
+        </p>
+
         {/* 正在紀錄中且最終上傳未失敗：顯示「結束紀錄」按鈕 */}
         {isRecording && !isFinalUploadFailed && (
           <button
